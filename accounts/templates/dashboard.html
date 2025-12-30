@@ -1,0 +1,724 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Dashboard - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+<style>
+    .footer { display: none; }
+    
+    /* Welcome Flash Message */
+    .welcome-flash-message {
+        position: fixed;
+        top: 70px;
+        right: 20px;
+        z-index: 1500;
+        background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+        color: var(--text-light);
+        padding: 0.75rem 1.25rem;
+        border-radius: var(--border-radius);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        animation: slideInRight 0.3s ease, fadeOut 0.3s ease 4.7s;
+        max-width: 350px;
+    }
+    
+    .welcome-flash-content {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+    }
+    
+    .welcome-flash-content span {
+        font-size: 0.95rem;
+        font-weight: 500;
+    }
+    
+    .welcome-flash-close {
+        background: transparent;
+        border: none;
+        color: var(--text-light);
+        font-size: 1.5rem;
+        font-weight: bold;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        opacity: 0.8;
+        transition: opacity 0.2s ease;
+    }
+    
+    .welcome-flash-close:hover {
+        opacity: 1;
+    }
+    
+    @keyframes slideInRight {
+        from {
+            transform: translateX(100%);
+            opacity: 0;
+        }
+        to {
+            transform: translateX(0);
+            opacity: 1;
+        }
+    }
+    
+    @keyframes fadeOut {
+        from {
+            opacity: 1;
+            transform: translateX(0);
+        }
+        to {
+            opacity: 0;
+            transform: translateX(100%);
+        }
+    }
+    
+    /* Tab Styles */
+    .dashboard-tabs {
+        display: flex;
+        gap: 0.5rem;
+        border-bottom: 2px solid var(--border-color);
+        margin-bottom: 1rem;
+        background: var(--bg-primary);
+        border-radius: var(--border-radius) var(--border-radius) 0 0;
+        padding: 0.5rem 0.75rem 0 0.75rem;
+        align-items: center;
+    }
+    
+    .tab-button {
+        padding: 0.75rem 1.5rem;
+        background: transparent;
+        border: none;
+        border-bottom: 3px solid transparent;
+        cursor: pointer;
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: var(--text-secondary);
+        transition: var(--transition);
+        position: relative;
+        bottom: -2px;
+        white-space: nowrap;
+    }
+    
+    .tab-button:hover {
+        color: var(--primary-color);
+        background: rgba(76, 175, 80, 0.05);
+    }
+    
+    .tab-button.active {
+        color: var(--primary-color);
+        border-bottom-color: var(--primary-color);
+        background: rgba(76, 175, 80, 0.05);
+    }
+    
+    .tab-content {
+        display: none;
+        animation: fadeIn 0.3s ease;
+    }
+    
+    .tab-content.active {
+        display: block;
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(5px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
+    
+    /* Upload Tab Styles */
+    .upload-tab-content {
+        background: var(--bg-primary);
+        border-radius: var(--border-radius);
+        padding: 1.25rem;
+        box-shadow: var(--shadow);
+    }
+    
+    .upload-info {
+        background: #e3f2fd;
+        padding: 0.5rem 0.75rem;
+        border-radius: var(--border-radius);
+        margin-bottom: 0.75rem;
+        border-left: 3px solid #2196F3;
+    }
+    
+    .upload-info h4 {
+        margin: 0 0 0.3rem 0;
+        color: #1976d2;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+    
+    .upload-info ul {
+        margin: 0.3rem 0;
+        padding-left: 1rem;
+        font-size: 0.8rem;
+    }
+    
+    .upload-info p {
+        margin: 0.3rem 0 0 0;
+        font-size: 0.75rem;
+        line-height: 1.4;
+    }
+    
+    /* Description field styling */
+    #id_description {
+        padding: 0.5rem 0.75rem !important;
+        font-size: 0.85rem !important;
+        min-height: auto !important;
+        resize: vertical;
+        rows: 2 !important;
+    }
+    
+    label[for="id_description"] {
+        font-size: 0.85rem !important;
+        margin-bottom: 0.4rem !important;
+    }
+    
+    .form-group:last-of-type {
+        margin-bottom: 1rem !important;
+    }
+    
+    .processing-warning {
+        background: #fff3cd;
+        border: 1.5px solid #ffc107;
+        border-radius: var(--border-radius);
+        padding: 0.5rem 0.75rem;
+        margin-bottom: 0.75rem;
+        color: #856404;
+    }
+    
+    .processing-warning h4 {
+        margin: 0 0 0.3rem 0;
+        color: #856404;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+    
+    .processing-warning p {
+        margin: 0.25rem 0;
+        font-size: 0.8rem;
+        line-height: 1.4;
+    }
+    
+    .processing-warning small {
+        font-size: 0.75rem;
+    }
+    
+    .file-input-wrapper {
+        position: relative;
+        margin-bottom: 0.75rem;
+    }
+    
+    .file-input-label {
+        display: block;
+        padding: 0.75rem;
+        border: 2px dashed #ddd;
+        border-radius: var(--border-radius);
+        text-align: center;
+        cursor: pointer;
+        transition: var(--transition);
+        font-size: 0.9rem;
+    }
+    
+    .file-input-label:hover {
+        border-color: var(--primary-color);
+        background: #f1f8f4;
+    }
+    
+    .file-input-disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    
+    /* Profile Tab Styles - Right Side Panel */
+    .profile-tab-content {
+        position: fixed;
+        top: 0;
+        right: -400px;
+        width: 350px;
+        height: 100vh;
+        background: var(--bg-primary);
+        box-shadow: -4px 0 20px rgba(0, 0, 0, 0.15);
+        z-index: 2000;
+        transition: right 0.3s ease;
+        overflow-y: auto;
+        padding: 0;
+    }
+    
+    .profile-tab-content.active {
+        right: 0;
+    }
+    
+    .profile-panel-header {
+        background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+        color: var(--text-light);
+        padding: 0.75rem 1rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+    }
+    
+    .profile-panel-header h2 {
+        margin: 0;
+        font-size: 0.95rem;
+        font-weight: 600;
+    }
+    
+    .profile-panel-close {
+        background: transparent;
+        border: none;
+        color: var(--text-light);
+        font-size: 1.3rem;
+        font-weight: bold;
+        cursor: pointer;
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        transition: var(--transition);
+        opacity: 0.9;
+    }
+    
+    .profile-panel-close:hover {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.2);
+    }
+    
+    .profile-panel-body {
+        padding: 1rem;
+    }
+    
+    .profile-header {
+        text-align: center;
+        margin-bottom: 0.75rem;
+        padding-bottom: 0.75rem;
+        border-bottom: 1px solid var(--border-color);
+    }
+    
+    .profile-avatar {
+        width: 50px;
+        height: 50px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, var(--primary-color) 0%, var(--primary-dark) 100%);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin: 0 auto 0.5rem;
+        font-size: 1.25rem;
+        color: var(--text-light);
+        font-weight: bold;
+        box-shadow: 0 2px 6px rgba(76, 175, 80, 0.2);
+    }
+    
+    .profile-header h3 {
+        margin: 0 0 0.2rem 0;
+        font-size: 0.95rem;
+        color: var(--text-primary);
+        font-weight: 600;
+    }
+    
+    .profile-header p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+    }
+    
+    .profile-info {
+        margin-bottom: 0.75rem;
+    }
+    
+    .profile-info-item {
+        padding: 0.5rem 0.6rem;
+        margin-bottom: 0.4rem;
+        background: var(--bg-secondary);
+        border-radius: var(--border-radius);
+        border-left: 2px solid var(--primary-color);
+        transition: var(--transition);
+    }
+    
+    .profile-info-item:hover {
+        background: #f0f0f0;
+        transform: translateX(2px);
+    }
+    
+    .profile-info-label {
+        font-weight: 600;
+        color: var(--text-primary);
+        font-size: 0.7rem;
+        display: block;
+        margin-bottom: 0.2rem;
+    }
+    
+    .profile-info-value {
+        color: var(--text-secondary);
+        font-size: 0.75rem;
+        word-break: break-word;
+    }
+    
+    .profile-logout-section {
+        margin-top: 0.75rem;
+        padding-top: 0.75rem;
+        border-top: 1px solid var(--border-color);
+    }
+    
+    /* Overlay when profile panel is open */
+    .profile-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0, 0, 0, 0.3);
+        z-index: 1999;
+        display: none;
+        opacity: 0;
+        transition: opacity 0.3s ease;
+    }
+    
+    .profile-overlay.active {
+        display: block;
+        opacity: 1;
+    }
+    
+    /* Jobs Tab */
+    .jobs-tab-content {
+        background: var(--bg-primary);
+        border-radius: var(--border-radius);
+        padding: 1rem;
+        box-shadow: var(--shadow);
+    }
+    
+    /* Mobile responsive for profile panel */
+    @media (max-width: 768px) {
+        .profile-tab-content {
+            width: 85%;
+            right: -85%;
+        }
+        
+        .profile-panel-header {
+            padding: 0.875rem 1rem;
+        }
+        
+        .profile-panel-header h2 {
+            font-size: 1rem;
+        }
+        
+        .profile-panel-body {
+            padding: 1rem;
+        }
+        
+        .profile-avatar {
+            width: 50px;
+            height: 50px;
+            font-size: 1.25rem;
+        }
+        
+        .profile-header h3 {
+            font-size: 1rem;
+        }
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="dashboard-container">
+    <!-- Welcome Flash Message -->
+    <div id="welcome-message" class="welcome-flash-message" style="display: none;">
+        <div class="welcome-flash-content">
+            <span>Welcome, {{ request.user.first_name|default:request.user.username }} 👋</span>
+            <button class="welcome-flash-close" onclick="hideWelcomeMessage()">&times;</button>
+        </div>
+    </div>
+    
+    <!-- Tabs Navigation -->
+    <div class="dashboard-tabs">
+        <button class="tab-button active" onclick="switchTab('upload', this)">Upload New FASTA</button>
+        <button class="tab-button" onclick="switchTab('jobs', this)">View Jobs</button>
+        <button class="tab-button" onclick="switchTab('profile', this)" style="margin-left: auto;">Profile</button>
+    </div>
+    
+    <!-- Upload Tab Content -->
+    <div id="upload-tab" class="tab-content active">
+        <div class="upload-tab-content">
+            <h2 style="margin: 0 0 0.75rem 0; font-size: 1.3rem;">Upload FASTA Files</h2>
+            <p class="subtitle" style="margin-bottom: 1rem; color: var(--text-secondary);">Upload up to 3 FASTA files at once for eggnog analysis</p>
+            
+            {% if has_running_job %}
+            <div class="processing-warning">
+                <h4>⏳ Processing in Progress</h4>
+                <p>
+                    <strong>A file is currently being processed:</strong> {{ running_job_info.filename }}<br>
+                    Please wait for the current processing to complete before uploading new files.<br>
+                    <small>Files are processed one at a time to ensure optimal performance.</small>
+                </p>
+            </div>
+            {% endif %}
+
+            <div class="upload-info">
+                <h4>📋 Supported File Formats:</h4>
+                <ul>
+                    <li>.fasta, .fa, .fas</li>
+                    <li>.fna, .ffn, .faa, .frn</li>
+                </ul>
+                <p style="margin: 0.25rem 0 0 0; font-size: 0.7rem; line-height: 1.3;">
+                    <strong>Max file size:</strong> 100MB per file | <strong>Max files:</strong> 3 files at once
+                </p>
+            </div>
+
+            <form method="POST" action="{% url 'dashboard' %}" enctype="multipart/form-data" class="auth-form" {% if has_running_job %}onsubmit="return false;"{% endif %}>
+                {% csrf_token %}
+                
+                <div class="form-group">
+                    <label for="id_files">FASTA Files (Select up to 3 files)</label>
+                    <div class="file-input-wrapper {% if has_running_job %}file-input-disabled{% endif %}">
+                        <label for="id_files" class="file-input-label">
+                            📁 Click to select files or drag and drop (up to 3 files)
+                            <input type="file" id="id_files" name="files" accept=".fasta,.fa,.fas,.fna,.ffn,.faa,.frn" multiple {% if not has_running_job %}required{% endif %} style="display: none;" onchange="showFileNames(this)" {% if has_running_job %}disabled{% endif %}>
+                        </label>
+                        <div id="file-names" class="file-name" style="display: none; margin-top: 0.5rem; color: var(--primary-color); font-weight: 500; font-size: 0.85rem;"></div>
+                    </div>
+                    <small class="form-text text-muted" style="font-size: 0.85rem; color: var(--text-secondary);">You can select multiple files (Ctrl+Click or Cmd+Click) - maximum 3 files</small>
+                </div>
+                
+                <div class="form-group" style="margin-bottom: 1rem;">
+                    <label for="id_description" style="font-size: 0.85rem; margin-bottom: 0.4rem;">Description (Optional)</label>
+                    {{ upload_form.description }}
+                </div>
+                
+                <button type="submit" class="btn btn-primary {% if has_running_job %}btn-disabled{% endif %}" {% if has_running_job %}disabled{% endif %}>
+                    {% if has_running_job %}
+                        ⏳ Processing in Progress (Upload Disabled)
+                    {% else %}
+                        Upload & Process
+                    {% endif %}
+                </button>
+            </form>
+        </div>
+        </div>
+        
+    <!-- Jobs Tab Content -->
+    <div id="jobs-tab" class="tab-content">
+        <div class="jobs-tab-content">
+            <h2 style="margin: 0 0 1rem 0; font-size: 1.3rem;">My FASTA Jobs</h2>
+            {% if jobs %}
+                <div style="display: grid; gap: 0.5rem;">
+                    {% for job in jobs %}
+                    <div class="job-card" style="background: var(--bg-primary); border-radius: var(--border-radius); padding: 0.75rem; box-shadow: var(--shadow); border: 1px solid var(--border-color);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <div style="flex: 1; display: flex; align-items: center; gap: 0.5rem;">
+                                <h3 style="margin: 0; font-size: 0.9rem; font-weight: 600; color: var(--text-primary);">{{ job.fasta_file.original_filename }}</h3>
+                                <span class="status-badge status-{{ job.status }}" style="display: inline-block; padding: 0.15rem 0.4rem; border-radius: 6px; font-size: 0.7rem; font-weight: 500; background: {% if job.status == 'completed' %}#e8f5e9{% elif job.status == 'running' or job.status == 'processing' %}#fff3cd{% elif job.status == 'failed' %}#ffebee{% else %}#e3f2fd{% endif %}; color: {% if job.status == 'completed' %}#2e7d32{% elif job.status == 'running' or job.status == 'processing' %}#856404{% elif job.status == 'failed' %}#c62828{% else %}#1976d2{% endif %}; white-space: nowrap;">
+                                    {{ job.status|title }}
+                                </span>
+                            </div>
+                            <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+                                {% if job.status == 'completed' %}
+                                    <a href="{% url 'fasta_processor:download' job.id %}" class="btn btn-primary" style="padding: 0.4rem 0.75rem; font-size: 0.8rem; width: auto;">Download</a>
+                                    {% if job.pathway_file %}
+                                    <a href="{% url 'fasta_processor:download_pathway' job.id %}" class="btn btn-secondary" style="padding: 0.4rem 0.75rem; font-size: 0.8rem; width: auto;">Pathway</a>
+                                    {% endif %}
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.4rem; margin-top: 0.5rem; padding-top: 0.5rem; border-top: 1px solid var(--border-color); font-size: 0.75rem;">
+                            <div>
+                                <div style="color: var(--text-secondary); font-weight: 500; margin-bottom: 0.15rem; font-size: 0.7rem;">Started</div>
+                                <div>{{ job.started_at|date:"M d, Y H:i" }}</div>
+                            </div>
+                            {% if job.completed_at %}
+                            <div>
+                                <div style="color: var(--text-secondary); font-weight: 500; margin-bottom: 0.15rem; font-size: 0.7rem;">Completed</div>
+                                <div>{{ job.completed_at|date:"M d, Y H:i" }}</div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div style="margin-top: 1rem; text-align: center;">
+                    <a href="{% url 'fasta_processor:jobs' %}" class="btn btn-secondary" style="width: auto; padding: 0.75rem 1.5rem;">View All Jobs</a>
+                </div>
+            {% else %}
+                <div class="empty-state" style="text-align: center; padding: 2rem 1rem; color: var(--text-secondary);">
+                    <div style="font-size: 3rem; margin-bottom: 0.5rem;">📄</div>
+                    <h3 style="margin: 0.5rem 0; font-size: 1.1rem;">No Jobs Yet</h3>
+                    <p style="margin: 0.5rem 0; font-size: 0.9rem;">Upload your first FASTA file to get started!</p>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <!-- Profile Overlay -->
+    <div id="profile-overlay" class="profile-overlay" onclick="closeProfilePanel()"></div>
+    
+    <!-- Profile Tab Content - Right Side Panel -->
+    <div id="profile-tab" class="tab-content profile-tab-content">
+        <div class="profile-panel-header">
+            <h2>Profile</h2>
+            <button class="profile-panel-close" onclick="closeProfilePanel()">&times;</button>
+        </div>
+        <div class="profile-panel-body">
+            <div class="profile-header">
+                <div class="profile-avatar">
+                    {{ request.user.first_name|default:request.user.username|first|upper }}
+                </div>
+                <h3>{{ request.user.first_name|default:request.user.username }}</h3>
+                <p>{{ request.user.email }}</p>
+            </div>
+            
+            <div class="profile-info">
+                <div class="profile-info-item">
+                    <span class="profile-info-label">Email</span>
+                    <span class="profile-info-value">{{ request.user.email }}</span>
+                </div>
+                <div class="profile-info-item">
+                    <span class="profile-info-label">Username</span>
+                    <span class="profile-info-value">{{ request.user.username }}</span>
+                </div>
+                {% if request.user.first_name %}
+                <div class="profile-info-item">
+                    <span class="profile-info-label">Full Name</span>
+                    <span class="profile-info-value">{{ request.user.first_name }}</span>
+                </div>
+                {% endif %}
+                <div class="profile-info-item">
+                    <span class="profile-info-label">Member Since</span>
+                    <span class="profile-info-value">{{ request.user.date_joined|date:"M d, Y" }}</span>
+                </div>
+            </div>
+            
+            <div class="profile-logout-section">
+        <form method="post" action="{% url 'logout' %}">
+            {% csrf_token %}
+                    <button type="submit" class="btn btn-danger" style="width: 100%; padding: 0.5rem; font-size: 0.85rem;">Logout</button>
+        </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function switchTab(tabName, buttonElement) {
+    // Handle profile tab differently - open as side panel
+    if (tabName === 'profile') {
+        openProfilePanel();
+        return;
+    }
+    
+    // Hide all tabs
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.classList.remove('active');
+    });
+    
+    // Remove active class from all buttons
+    document.querySelectorAll('.tab-button').forEach(btn => {
+        btn.classList.remove('active');
+    });
+    
+    // Show selected tab
+    const selectedTab = document.getElementById(tabName + '-tab');
+    if (selectedTab) {
+        selectedTab.classList.add('active');
+    }
+    
+    // Add active class to clicked button
+    if (buttonElement) {
+        buttonElement.classList.add('active');
+    }
+    
+    // Save to localStorage
+    localStorage.setItem('dashboardActiveTab', tabName);
+}
+
+function openProfilePanel() {
+    const profileTab = document.getElementById('profile-tab');
+    const overlay = document.getElementById('profile-overlay');
+    
+    if (profileTab && overlay) {
+        profileTab.classList.add('active');
+        overlay.classList.add('active');
+        document.body.style.overflow = 'hidden'; // Prevent background scrolling
+    }
+}
+
+function closeProfilePanel() {
+    const profileTab = document.getElementById('profile-tab');
+    const overlay = document.getElementById('profile-overlay');
+    
+    if (profileTab && overlay) {
+        profileTab.classList.remove('active');
+        overlay.classList.remove('active');
+        document.body.style.overflow = ''; // Restore scrolling
+        
+        // Remove active class from profile button
+        const profileButton = Array.from(document.querySelectorAll('.tab-button')).find(btn => 
+            btn.textContent.includes('Profile')
+        );
+        if (profileButton) {
+            profileButton.classList.remove('active');
+        }
+    }
+}
+
+function showFileNames(input) {
+    const fileNamesDiv = document.getElementById('file-names');
+    if (input.files.length > 0) {
+        const fileNames = Array.from(input.files).map(file => file.name).join(', ');
+        fileNamesDiv.textContent = `Selected: ${fileNames}`;
+        fileNamesDiv.style.display = 'block';
+    } else {
+        fileNamesDiv.style.display = 'none';
+    }
+}
+
+function hideWelcomeMessage() {
+    const welcomeMsg = document.getElementById('welcome-message');
+    if (welcomeMsg) {
+        welcomeMsg.style.animation = 'fadeOut 0.3s ease';
+        setTimeout(() => {
+            welcomeMsg.style.display = 'none';
+        }, 300);
+    }
+}
+
+// Restore last active tab on page load and show welcome message
+document.addEventListener('DOMContentLoaded', function() {
+    // Show welcome message for 5 seconds
+    const welcomeMsg = document.getElementById('welcome-message');
+    if (welcomeMsg) {
+        welcomeMsg.style.display = 'block';
+        setTimeout(() => {
+            hideWelcomeMessage();
+        }, 5000);
+    }
+    
+    // Restore last active tab
+    const savedTab = localStorage.getItem('dashboardActiveTab');
+    if (savedTab && savedTab !== 'upload') {
+        const tabButtons = document.querySelectorAll('.tab-button');
+        let targetButton = null;
+        if (savedTab === 'jobs') {
+            targetButton = tabButtons[1];
+        } else if (savedTab === 'profile') {
+            targetButton = tabButtons[2];
+        }
+        if (targetButton) {
+            switchTab(savedTab, targetButton);
+        }
+    }
+});
+</script>
+{% endblock %}

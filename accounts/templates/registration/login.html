@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Login - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h2>User Login</h2>
+        <p class="subtitle">Sign in to your account</p>
+        
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
+
+        <form method="post" class="auth-form">
+            {% csrf_token %}
+
+            <div class="form-group">
+                <label for="id_username">Email</label>
+                {{ form.username }}
+                {% if form.username.errors %}
+                    <div class="error-message">
+                        {% for error in form.username.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="form-group">
+                <label for="id_password">Password</label>
+                {{ form.password }}
+                {% if form.password.errors %}
+                    <div class="error-message">
+                        {% for error in form.password.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+
+            {% if form.non_field_errors %}
+                <div class="error-message">
+                    {% for error in form.non_field_errors %}
+                        <small>{{ error }}</small>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <button type="submit" class="btn btn-primary">Login</button>
+        </form>
+
+        <div class="auth-link">
+            <a href="/accounts/password_reset/">Forgot Password?</a>
+        </div>
+
+        <div class="auth-link">
+            New user? <a href="{% url 'register' %}">Register here</a>
+        </div>
+    </div>
+</div>
+{% endblock %}
+

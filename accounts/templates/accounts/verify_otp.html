@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Verify OTP - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h2>Verify OTP</h2>
+        
+        {% if messages %}
+            {% for message in messages %}
+            <div class="success-message">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+        
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
+        
+        <div class="info-box">
+            <strong>OTP sent to:</strong> {{ phone }}<br>
+            <small>Please enter the 6-digit OTP code you received.</small>
+            {% if dev_otp %}
+            <div class="dev-otp-box">
+                <strong>🔧 DEVELOPMENT MODE:</strong>
+                <div class="dev-otp-code">{{ dev_otp }}</div>
+                <small>This is shown only in development. Check your console/terminal for OTP.</small>
+            </div>
+            {% endif %}
+        </div>
+        
+        <form method="POST" class="auth-form">
+            {% csrf_token %}
+            
+            <div class="form-group">
+                <label for="otp">Enter OTP</label>
+                <input type="text" id="otp" name="otp" class="form-control" placeholder="Enter 6-digit OTP" maxlength="6" pattern="[0-9]{6}" required autofocus>
+            </div>
+            
+            <button type="submit" class="btn btn-primary">Verify OTP</button>
+        </form>
+        
+        <form method="POST" action="{% url 'resend_otp' %}" class="auth-form" style="margin-top: 1rem;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-secondary">Resend OTP</button>
+        </form>
+        
+        <div class="auth-link">
+            <a href="{% url 'register' %}">Back to Registration</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

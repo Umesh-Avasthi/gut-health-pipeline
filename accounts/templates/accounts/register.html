@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Register - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h2>User Registration</h2>
+        <p class="subtitle">Create your account to get started</p>
+        
+        <div class="info-box">
+            <strong>Note:</strong>
+            <small>After submitting, you will receive an OTP on your mobile number. Please verify it to complete registration.</small>
+        </div>
+
+        {% if error %}
+        <div class="error-message">{{ error }}</div>
+        {% endif %}
+
+        <form method="POST" class="auth-form">
+            {% csrf_token %}
+            
+            <div class="form-group">
+                <label for="id_name">Full Name</label>
+                {{ form.name }}
+                {% if form.name.errors %}
+                    <div class="error-message">
+                        {% for error in form.name.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+            
+            <div class="form-group">
+                <label for="id_email">Email Address</label>
+                {{ form.email }}
+                {% if form.email.errors %}
+                    <div class="error-message">
+                        {% for error in form.email.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+            
+            <div class="form-group">
+                <label for="id_phone">Phone Number</label>
+                {{ form.phone }}
+                {% if form.phone.errors %}
+                    <div class="error-message">
+                        {% for error in form.phone.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+                <small class="form-text text-muted">Enter phone number with country code (e.g., +1234567890)</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="id_password">Password</label>
+                {{ form.password }}
+                {% if form.password.errors %}
+                    <div class="error-message">
+                        {% for error in form.password.errors %}
+                            <small>{{ error }}</small>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+                <small class="form-text text-muted">Password must be at least 8 characters long</small>
+            </div>
+            
+            {% if form.non_field_errors %}
+                <div class="error-message">
+                    {% for error in form.non_field_errors %}
+                        <small>{{ error }}</small>
+                    {% endfor %}
+                </div>
+            {% endif %}
+            
+            <button type="submit" class="btn btn-primary">Send OTP</button>
+        </form>
+
+        <div class="auth-link">
+            Already registered? <a href="{% url 'login' %}">Login here</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

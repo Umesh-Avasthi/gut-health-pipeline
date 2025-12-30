@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Gut Health App{% endblock %}</title>
+    
+    {% load static %}
+    
+    <!-- Base CSS - Common styles for all pages -->
+    <link rel="stylesheet" href="{% static 'accounts/css/base.css' %}">
+    
+    <!-- Page-specific CSS -->
+    {% block extra_css %}{% endblock %}
+</head>
+<body>
+    <!-- Navigation (if needed) -->
+    {% block navigation %}
+    {% if user.is_authenticated %}
+    <nav class="navbar">
+        <div class="container">
+            <div class="nav-brand">
+                <a href="{% url 'dashboard' %}">Gut Health App</a>
+            </div>
+            <div class="nav-links">
+                <span>Welcome, {{ user.first_name|default:user.username }}</span>
+                <form method="post" action="{% url 'logout' %}" style="display: inline;">
+                    {% csrf_token %}
+                    <button type="submit" class="btn-logout">Logout</button>
+                </form>
+            </div>
+        </div>
+    </nav>
+    {% endif %}
+    {% endblock %}
+
+    <!-- Messages -->
+    {% if messages %}
+    <div class="messages-container">
+        {% for message in messages %}
+        <div class="alert alert-{{ message.tags }}">
+            <span class="alert-message">{{ message }}</span>
+            <button class="alert-close" onclick="hideAlert(this.parentElement);" aria-label="Close">&times;</button>
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Main Content -->
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <!-- Footer -->
+    {% block footer %}
+    <footer class="footer">
+        <div class="container">
+            <p>&copy; 2025 Gut Health App. All rights reserved.</p>
+        </div>
+    </footer>
+    {% endblock %}
+
+    <!-- JavaScript -->
+    {% block extra_js %}{% endblock %}
+    
+    <!-- Auto-hide flash messages after 5 seconds -->
+    <script>
+    function updateMessagesContainer() {
+        const container = document.querySelector('.messages-container');
+        if (container && container.children.length === 0) {
+            container.style.display = 'none';
+        }
+    }
+    
+    function hideAlert(alert) {
+        // Add fade-out animation
+        alert.style.transition = 'opacity 0.5s ease, transform 0.5s ease';
+        alert.style.opacity = '0';
+        alert.style.transform = 'translateX(100%)';
+        
+        // Remove element after animation completes
+        setTimeout(function() {
+            alert.remove();
+            updateMessagesContainer();
+        }, 500); // Wait for animation to complete
+    }
+    
+    (function() {
+        const alerts = document.querySelectorAll('.alert');
+        alerts.forEach(function(alert) {
+            // Set timeout to hide after 5 seconds
+            const timeoutId = setTimeout(function() {
+                hideAlert(alert);
+            }, 5000); // 5 seconds
+            
+            // Store timeout ID so we can clear it if user clicks close
+            alert.dataset.timeoutId = timeoutId;
+            
+            // Clear timeout if user manually closes the alert
+            const closeBtn = alert.querySelector('.alert-close');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', function() {
+                    clearTimeout(timeoutId);
+                });
+            }
+        });
+    })();
+    </script>
+</body>
+</html>
+

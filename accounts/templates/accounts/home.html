@@ -1,0 +1,27 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Welcome - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+{% endblock %}
+
+{% block content %}
+<div class="home-container">
+    <h1>Welcome to Gut Health App</h1>
+    <p>Please login or register to continue</p>
+    
+    {% if last_user %}
+    <div class="last-user-info">
+        <p class="last-login-text">Last login: <strong>{{ last_user.first_name|default:last_user.username }}</strong></p>
+        <a href="{% url 'login' %}?email={{ last_user.username }}" class="btn btn-success">Continue as {{ last_user.first_name|default:last_user.username }}</a>
+    </div>
+    {% endif %}
+    
+    <div class="home-buttons">
+        <a href="{% url 'login' %}" class="btn btn-primary">Login</a>
+        <a href="{% url 'register' %}" class="btn btn-secondary">Register</a>
+    </div>
+</div>
+{% endblock %}

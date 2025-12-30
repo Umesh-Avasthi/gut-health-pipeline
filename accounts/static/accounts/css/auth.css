@@ -1,0 +1,355 @@
+/* ============================================
+   AUTH.CSS - Authentication Pages Styles
+   (Login, Register, OTP Verification)
+   ============================================ */
+
+/* Auth Container */
+.auth-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: calc(100vh - 200px);
+    padding: 2rem 1rem;
+}
+
+.auth-card {
+    background: var(--bg-primary);
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    padding: 2.5rem;
+    width: 100%;
+    max-width: 450px;
+    animation: fadeInUp 0.5s ease;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.auth-card h1,
+.auth-card h2 {
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+    text-align: center;
+}
+
+.auth-card h1 {
+    font-size: 2rem;
+    margin-bottom: 0.5rem;
+}
+
+.auth-card h2 {
+    font-size: 1.75rem;
+    margin-bottom: 1.5rem;
+}
+
+.auth-card .subtitle {
+    text-align: center;
+    color: var(--text-secondary);
+    margin-bottom: 2rem;
+    font-size: 0.95rem;
+}
+
+/* Form Styles */
+.auth-form {
+    width: 100%;
+}
+
+.form-group {
+    margin-bottom: 1.5rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+.form-control {
+    width: 100%;
+    padding: 0.875rem 1rem;
+    border: 2px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    font-family: var(--font-family);
+    transition: var(--transition);
+    background-color: var(--bg-primary);
+    color: var(--text-primary);
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.1);
+}
+
+.form-control::placeholder {
+    color: #bdbdbd;
+}
+
+/* Buttons */
+.btn {
+    display: inline-block;
+    padding: 0.875rem 2rem;
+    border: none;
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    font-weight: 600;
+    text-align: center;
+    text-decoration: none;
+    cursor: pointer;
+    transition: var(--transition);
+    font-family: var(--font-family);
+    width: 100%;
+}
+
+.btn-primary {
+    background-color: var(--primary-color);
+    color: var(--text-light);
+}
+
+.btn-primary:hover {
+    background-color: var(--primary-dark);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-hover);
+}
+
+.btn-secondary {
+    background-color: var(--secondary-color);
+    color: var(--text-light);
+}
+
+.btn-secondary:hover {
+    background-color: var(--secondary-dark);
+    transform: translateY(-2px);
+}
+
+.btn-success {
+    background-color: var(--success-color);
+    color: var(--text-light);
+}
+
+.btn-success:hover {
+    background-color: var(--primary-dark);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-hover);
+}
+
+.btn-danger {
+    background-color: var(--danger-color);
+    color: var(--text-light);
+}
+
+.btn-danger:hover {
+    background-color: #d32f2f;
+    transform: translateY(-2px);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+/* Info Box */
+.info-box {
+    background-color: #e3f2fd;
+    border-left: 4px solid var(--info-color);
+    padding: 1rem 1.25rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 1.5rem;
+    color: #1565c0;
+    font-size: 0.9rem;
+}
+
+.info-box strong {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-size: 1rem;
+}
+
+.info-box small {
+    display: block;
+    color: #1976d2;
+}
+
+/* Development OTP Box */
+.dev-otp-box {
+    margin-top: 1rem;
+    padding: 1rem;
+    background: #fff3cd;
+    border: 2px dashed #ffc107;
+    border-radius: var(--border-radius);
+    text-align: center;
+}
+
+.dev-otp-box strong {
+    display: block;
+    margin-bottom: 0.5rem;
+    color: #856404;
+}
+
+.dev-otp-code {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #d32f2f;
+    letter-spacing: 0.2rem;
+    margin: 0.5rem 0;
+}
+
+.dev-otp-box small {
+    display: block;
+    color: #856404;
+    font-size: 0.85rem;
+}
+
+/* Error Messages */
+.error-message {
+    background-color: #ffebee;
+    color: #c62828;
+    padding: 0.875rem 1rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 1rem;
+    border-left: 4px solid var(--danger-color);
+    font-size: 0.9rem;
+}
+
+/* Success Messages */
+.success-message {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    padding: 0.875rem 1rem;
+    border-radius: var(--border-radius);
+    margin-bottom: 1rem;
+    border-left: 4px solid var(--success-color);
+    font-size: 0.9rem;
+}
+
+/* Links */
+.auth-link {
+    text-align: center;
+    margin-top: 1.5rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.auth-link a {
+    color: var(--secondary-color);
+    text-decoration: none;
+    font-weight: 500;
+    transition: var(--transition);
+}
+
+.auth-link a:hover {
+    color: var(--secondary-dark);
+    text-decoration: underline;
+}
+
+/* Home Page Specific */
+.home-container {
+    text-align: center;
+    padding: 4rem 2rem;
+    min-height: calc(100vh - 200px);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.home-container h1 {
+    font-size: 3rem;
+    color: var(--primary-color);
+    margin-bottom: 1rem;
+    animation: fadeIn 1s ease;
+}
+
+.home-container p {
+    font-size: 1.25rem;
+    color: var(--text-secondary);
+    margin-bottom: 2.5rem;
+}
+
+.home-buttons {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    justify-content: center;
+}
+
+.home-buttons .btn {
+    width: auto;
+    min-width: 150px;
+    padding: 1rem 2.5rem;
+    font-size: 1.1rem;
+}
+
+.last-user-info {
+    margin: 2rem 0;
+    padding: 1.5rem;
+    background-color: #f5f5f5;
+    border-radius: var(--border-radius);
+    border: 2px solid var(--primary-color);
+    max-width: 400px;
+    width: 100%;
+}
+
+.last-login-text {
+    color: var(--text-secondary);
+    font-size: 1rem;
+    margin-bottom: 1rem;
+}
+
+.last-login-text strong {
+    color: var(--primary-color);
+    font-size: 1.1rem;
+}
+
+.last-user-info .btn {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .auth-card {
+        padding: 2rem 1.5rem;
+    }
+    
+    .auth-card h1 {
+        font-size: 1.75rem;
+    }
+    
+    .auth-card h2 {
+        font-size: 1.5rem;
+    }
+    
+    .home-container h1 {
+        font-size: 2rem;
+    }
+    
+    .home-buttons {
+        flex-direction: column;
+        width: 100%;
+    }
+    
+    .home-buttons .btn {
+        width: 100%;
+    }
+}
+

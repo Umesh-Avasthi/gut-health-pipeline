@@ -1,0 +1,197 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Upload FASTA File - Gut Health App{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
+<style>
+    .upload-container {
+        max-width: 600px;
+        margin: 0.5rem auto;
+        padding: 0.75rem;
+    }
+    .upload-info {
+        background: #e3f2fd;
+        padding: 0.75rem;
+        border-radius: 8px;
+        margin-bottom: 0.75rem;
+        border-left: 4px solid #2196F3;
+    }
+    .upload-info h4 {
+        margin-bottom: 0.4rem;
+        color: #1976d2;
+        font-size: 0.95rem;
+    }
+    .upload-info ul {
+        margin: 0.4rem 0;
+        padding-left: 1.25rem;
+        font-size: 0.9rem;
+    }
+    .upload-info p {
+        margin-top: 0.4rem;
+        font-size: 0.85rem;
+    }
+    .file-input-wrapper {
+        position: relative;
+        margin-bottom: 0.75rem;
+    }
+    .file-input-label {
+        display: block;
+        padding: 0.75rem;
+        border: 2px dashed #ddd;
+        border-radius: 8px;
+        text-align: center;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        font-size: 0.9rem;
+    }
+    .file-input-label:hover {
+        border-color: #4CAF50;
+        background: #f1f8f4;
+    }
+    .file-name {
+        margin-top: 0.4rem;
+        color: #4CAF50;
+        font-weight: 500;
+        font-size: 0.85rem;
+    }
+    .file-name-hidden {
+        display: none;
+    }
+    .file-input-hidden {
+        display: none;
+    }
+    .processing-warning {
+        background: #fff3cd;
+        border: 2px solid #ffc107;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-bottom: 0.75rem;
+        color: #856404;
+    }
+    .processing-warning h4 {
+        margin: 0 0 0.4rem 0;
+        color: #856404;
+        font-size: 0.95rem;
+    }
+    .processing-warning p {
+        margin: 0.3rem 0;
+        font-size: 0.9rem;
+    }
+    .file-input-disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+        pointer-events: none;
+    }
+    .file-input-disabled .file-input-label {
+        background: #f5f5f5;
+        border-color: #ccc;
+        cursor: not-allowed;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="upload-container">
+    <div class="auth-card">
+        <h2>Upload FASTA Files</h2>
+        <p class="subtitle">Upload up to 3 FASTA files at once for eggnog analysis</p>
+        
+        {% if has_running_job %}
+        <div class="processing-warning">
+            <h4>⏳ Processing in Progress</h4>
+            <p>
+                <strong>A file is currently being processed:</strong> {{ running_job_info.filename }}<br>
+                Please wait for the current processing to complete before uploading new files.<br>
+                <small>Files are processed one at a time to ensure optimal performance.</small>
+            </p>
+            <p style="margin-top: 0.5rem;">
+                <a href="{% url 'fasta_processor:jobs' %}" class="btn btn-secondary" style="display: inline-block; width: auto;">View Processing Status</a>
+            </p>
+        </div>
+        {% endif %}
+
+        <div class="upload-info">
+            <h4>📋 Supported File Formats:</h4>
+            <ul>
+                <li>.fasta, .fa, .fas</li>
+                <li>.fna, .ffn, .faa, .frn</li>
+            </ul>
+            <p style="margin-top: 0.5rem; font-size: 0.9rem;">
+                <strong>Max file size:</strong> 100MB per file<br>
+                <strong>Max files:</strong> 3 files at once
+            </p>
+        </div>
+
+        {% if form.errors %}
+        <div class="error-message">
+            {% for field in form %}
+                {% for error in field.errors %}
+                    <div>{{ error }}</div>
+                {% endfor %}
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <form method="POST" enctype="multipart/form-data" class="auth-form" {% if has_running_job %}onsubmit="return false;"{% endif %}>
+            {% csrf_token %}
+            
+            <div class="form-group">
+                <label for="id_files">FASTA Files (Select up to 3 files)</label>
+                <div class="file-input-wrapper {% if has_running_job %}file-input-disabled{% endif %}">
+                    <label for="id_files" class="file-input-label">
+                        📁 Click to select files or drag and drop (up to 3 files)
+                        <input type="file" id="id_files" name="files" accept=".fasta,.fa,.fas,.fna,.ffn,.faa,.frn" multiple {% if not has_running_job %}required{% endif %} style="display: none;" onchange="showFileNames(this)" {% if has_running_job %}disabled{% endif %}>
+                    </label>
+                    <div id="file-names" class="file-name" style="display: none;"></div>
+                </div>
+                <small class="form-text text-muted">You can select multiple files (Ctrl+Click or Cmd+Click) - maximum 3 files</small>
+            </div>
+            
+            <div class="form-group">
+                <label for="id_description">Description (Optional)</label>
+                {{ form.description }}
+            </div>
+            
+            <button type="submit" class="btn btn-primary {% if has_running_job %}btn-disabled{% endif %}" {% if has_running_job %}disabled{% endif %}>
+                {% if has_running_job %}
+                    ⏳ Processing in Progress (Upload Disabled)
+                {% else %}
+                    Upload & Process
+                {% endif %}
+            </button>
+        </form>
+
+        <div class="auth-link">
+            <a href="{% url 'fasta_processor:jobs' %}">View My Processing Jobs</a> | 
+            <a href="{% url 'dashboard' %}">Back to Dashboard</a>
+        </div>
+    </div>
+</div>
+
+<script>
+function showFileNames(input) {
+    const fileNamesDiv = document.getElementById('file-names');
+    if (input.files && input.files.length > 0) {
+        const fileCount = input.files.length;
+        if (fileCount > 3) {
+            fileNamesDiv.innerHTML = '<span style="color: #c62828;">⚠️ Too many files! Maximum 3 files allowed. You selected ' + fileCount + ' files.</span>';
+            fileNamesDiv.style.display = 'block';
+            input.value = ''; // Clear selection
+            return;
+        }
+        
+        let fileList = '<strong>Selected ' + fileCount + ' file(s):</strong><br>';
+        for (let i = 0; i < fileCount; i++) {
+            fileList += '• ' + input.files[i].name + '<br>';
+        }
+        fileNamesDiv.innerHTML = fileList;
+        fileNamesDiv.style.display = 'block';
+    } else {
+        fileNamesDiv.style.display = 'none';
+    }
+}
+</script>
+{% endblock %}
+

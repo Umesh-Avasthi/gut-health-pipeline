@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# Django
+media/
+staticfiles/
+
+# Environments
+venv/
+.env
+
+# Big bioinformatics DBs
+eggnog_db_final/
+databases/
+*.dmnd
+*.gz
+
+# OS
+.DS_Store
+Thumbs.db
