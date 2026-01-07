@@ -4,191 +4,7 @@
 {% block title %}My FASTA Jobs - Gut Health App{% endblock %}
 
 {% block extra_css %}
-<style>
-    .jobs-container {
-        max-width: 1200px;
-        margin: 0.5rem auto;
-        padding: 0 0.75rem;
-    }
-    .jobs-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 0.5rem;
-    }
-    .jobs-header h2 {
-        margin: 0;
-        font-size: 1.3rem;
-    }
-    .status-badge {
-        display: inline-block;
-        padding: 0.25rem 0.75rem;
-        border-radius: 12px;
-        font-size: 0.85rem;
-        font-weight: 500;
-    }
-    .status-uploaded { background: #e3f2fd; color: #1976d2; }
-    .status-processing { background: #fff3cd; color: #856404; }
-    .status-completed { background: #e8f5e9; color: #2e7d32; }
-    .status-failed { background: #ffebee; color: #c62828; }
-    .job-card {
-        background: white;
-        border-radius: 8px;
-        padding: 0.75rem;
-        margin-bottom: 0.5rem;
-        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-    }
-    .job-card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: start;
-        margin-bottom: 0.5rem;
-    }
-    .job-info {
-        flex: 1;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-    }
-    .job-info h3 {
-        margin: 0;
-        font-size: 1.05rem;
-    }
-    .job-actions {
-        display: flex;
-        gap: 0.5rem;
-    }
-    .job-actions form {
-        display: inline;
-    }
-    .job-details {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 0.5rem;
-        margin-top: 0.5rem;
-        padding-top: 0.5rem;
-        border-top: 1px solid #e0e0e0;
-    }
-    .detail-item {
-        font-size: 0.85rem;
-    }
-    .detail-label {
-        color: #757575;
-        font-weight: 500;
-        margin-bottom: 0.2rem;
-    }
-    .empty-state {
-        text-align: center;
-        padding: 1rem 0.5rem;
-        color: #757575;
-    }
-    .empty-state-icon {
-        font-size: 2rem;
-        margin-bottom: 0.4rem;
-    }
-    .empty-state h3 {
-        margin: 0.4rem 0;
-        font-size: 1rem;
-    }
-    .empty-state p {
-        margin: 0.4rem 0;
-        font-size: 0.85rem;
-    }
-    .progress-container {
-        margin-top: 0.5rem;
-        padding: 0.75rem;
-        background: white;
-        border-radius: 8px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .progress-bar-wrapper {
-        width: 100%;
-        height: 24px;
-        background: #e0e0e0;
-        border-radius: 12px;
-        overflow: hidden;
-        margin: 0.3rem 0;
-        box-shadow: inset 0 2px 4px rgba(0,0,0,0.1);
-    }
-    .progress-bar {
-        height: 100%;
-        background: linear-gradient(90deg, #4CAF50, #45a049);
-        transition: width 0.5s ease;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-        font-size: 0.8rem;
-        font-weight: bold;
-        min-width: 50px;
-        position: relative;
-    }
-    .progress-message {
-        font-size: 0.9rem;
-        color: #555;
-        margin-top: 0.5rem;
-        font-weight: 500;
-    }
-    .progress-animated {
-        background: linear-gradient(90deg, #4CAF50, #45a049, #4CAF50);
-        background-size: 200% 100%;
-        animation: progress-shimmer 2s infinite;
-    }
-    @keyframes progress-shimmer {
-        0% { background-position: 200% 0; }
-        100% { background-position: -200% 0; }
-    }
-    /* Tabs styling */
-    .tabs-container {
-        margin-bottom: 0.5rem;
-        border-bottom: 2px solid #e0e0e0;
-    }
-    .tabs {
-        display: flex;
-        gap: 0.5rem;
-        margin-bottom: -2px;
-    }
-    .tab {
-        padding: 0.6rem 1.25rem;
-        background: transparent;
-        border: none;
-        border-bottom: 3px solid transparent;
-        cursor: pointer;
-        font-size: 0.95rem;
-        font-weight: 500;
-        color: #666;
-        transition: all 0.3s ease;
-        position: relative;
-    }
-    .tab:hover {
-        color: #1976d2;
-        background: #f5f5f5;
-    }
-    .tab.active {
-        color: #1976d2;
-        border-bottom-color: #1976d2;
-        background: transparent;
-    }
-    .tab-badge {
-        display: inline-block;
-        margin-left: 0.5rem;
-        padding: 0.15rem 0.5rem;
-        background: #e0e0e0;
-        border-radius: 12px;
-        font-size: 0.75rem;
-        font-weight: 600;
-    }
-    .tab.active .tab-badge {
-        background: #1976d2;
-        color: white;
-    }
-    .tab-content {
-        display: none;
-    }
-    .tab-content.active {
-        display: block;
-    }
-</style>
+<link rel="stylesheet" href="{% static 'fasta_processor/css/jobs.css' %}">
 {% endblock %}
 
 {% block content %}
@@ -482,27 +298,12 @@
     </div>
 </div>
 
-<script>
-// Tab switching functionality
-function showTab(tabName) {
-    // Hide all tab contents
-    document.querySelectorAll('.tab-content').forEach(content => {
-        content.classList.remove('active');
-    });
-    
-    // Remove active class from all tabs
-    document.querySelectorAll('.tab').forEach(tab => {
-        tab.classList.remove('active');
-    });
-    
-    // Show selected tab content
-    document.getElementById('tab-' + tabName).classList.add('active');
-    
-    // Add active class to clicked tab button
-    event.currentTarget.classList.add('active');
-}
+{% endblock %}
 
-// Progress polling for running jobs
+{% block extra_js %}
+<script src="{% static 'fasta_processor/js/jobs.js' %}"></script>
+<script>
+// Initialize progress polling with Django template data
 (function() {
     const runningJobs = [];
     {% for fasta_file in processing_files %}
@@ -511,43 +312,8 @@ function showTab(tabName) {
         {% endif %}
     {% endfor %}
     
-    if (runningJobs.length === 0) {
-        return; // No running jobs, no need to poll
-    }
-    
-    function updateProgress(jobId) {
-        const url = '{% url "fasta_processor:progress" 999 %}'.replace('999', jobId);
-        fetch(url)
-            .then(response => response.json())
-            .then(data => {
-                const progressBar = document.getElementById(`progress-bar-${jobId}`);
-                const progressText = document.getElementById(`progress-text-${jobId}`);
-                const progressMessage = document.getElementById(`progress-message-${jobId}`);
-                
-                if (progressBar && progressText && progressMessage) {
-                    const progress = data.progress || 0;
-                    progressBar.style.width = progress + '%';
-                    progressText.textContent = progress + '%';
-                    progressMessage.textContent = data.progress_message || 'Processing...';
-                    
-                    // If completed or failed, stop polling and reload page after a delay
-                    if (data.completed || data.failed) {
-                        setTimeout(() => {
-                            window.location.reload();
-                        }, 2000);
-                    }
-                }
-            })
-            .catch(error => {
-                console.error('Error fetching progress:', error);
-            });
-    }
-    
-    // Poll every 3 seconds for each running job
-    runningJobs.forEach(jobId => {
-        updateProgress(jobId); // Initial update
-        setInterval(() => updateProgress(jobId), 3000);
-    });
+    const progressUrlTemplate = '{% url "fasta_processor:progress" 999 %}';
+    initializeProgressPolling(runningJobs, progressUrlTemplate);
 })();
 </script>
 {% endblock %}

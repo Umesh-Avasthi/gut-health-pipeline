@@ -72,11 +72,13 @@ class RegistrationForm(forms.Form):
     )
     
     def clean_email(self):
-        """Check if email already exists"""
+        """Check if email already exists (case-insensitive)"""
         email = self.cleaned_data.get('email')
-        if email and User.objects.filter(username=email).exists():
-            raise forms.ValidationError('Email already registered. Please login.')
-        return email
+        if email:
+            email_lower = email.lower().strip()
+            if User.objects.filter(username__iexact=email_lower).exists():
+                raise forms.ValidationError('This email is already registered. Please login instead.')
+        return email.lower().strip() if email else email
     
     def clean_phone(self):
         """Validate and clean phone number"""

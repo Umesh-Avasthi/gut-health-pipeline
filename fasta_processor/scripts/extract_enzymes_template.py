@@ -1,44 +1,22 @@
-"""
-Template for extracting enzymes from eggNOG annotations.
-This script processes emapper annotation output and extracts enzyme data.
-"""
 import pandas as pd
-import sys
-sys.path.insert(0, r'{EGGNOG_DB_PATH}')
 
 INPUT_FILE = r"{ANNOTATIONS_FILE}"
 OUTPUT_FILE = r"{OUTPUT_FILE}"
 
-# Read header line manually
-with open(INPUT_FILE, "r") as f:
+with open(INPUT_FILE) as f:
     for line in f:
         if line.startswith("#query"):
-            header = line.strip().lstrip("#").split("\t")
+            header = line.lstrip("#").strip().split("\t")
             break
 
-# Read annotation file
-df = pd.read_csv(INPUT_FILE, sep="\t", comment="#", names=header, low_memory=False)
+df = pd.read_csv(INPUT_FILE, sep="\t", comment="#", names=header)
 
-# Keep only rows with valid EC numbers
-df = df[df["EC"].notna() & (df["EC"] != "-")]
+# KEEP rows that have KEGG KOs (not EC!)
+df = df[df["KEGG_ko"].notna() & (df["KEGG_ko"] != "-")]
 
-# Select required columns
-enzymes_df = df[["query", "Preferred_name", "EC", "KEGG_ko", "KEGG_Pathway"]].copy()
+df = df[["query","Preferred_name","KEGG_ko","KEGG_Pathway"]]
+df.columns = ["protein_id","enzyme_name","kegg_ko","kegg_pathway"]
+df["ec_number"] = "-"
 
-# Rename columns
-enzymes_df.columns = ["protein_id", "enzyme_name", "ec_number", "kegg_ko", "kegg_pathway"]
-
-# Clean & normalize data
-enzymes_df["ec_number"] = enzymes_df["ec_number"].str.split(",")
-enzymes_df = enzymes_df.explode("ec_number")
-enzymes_df["ec_number"] = enzymes_df["ec_number"].str.strip()
-enzymes_df["kegg_ko"] = enzymes_df["kegg_ko"].astype(str).str.replace("ko:", "", regex=False)
-enzymes_df["enzyme_name"] = enzymes_df["enzyme_name"].fillna("Unknown_enzyme")
-
-# Drop duplicates
-enzymes_df.drop_duplicates(subset=["protein_id", "ec_number"], inplace=True)
-
-# Save output
-enzymes_df.to_csv(OUTPUT_FILE, index=False)
-print(f"✅ Enzyme table created: {len(enzymes_df)} enzymes")
-
+df.to_csv(OUTPUT_FILE, index=False)
+print("eggNOG enzymes:", len(df))

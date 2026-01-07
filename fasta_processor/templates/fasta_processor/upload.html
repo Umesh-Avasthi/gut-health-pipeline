@@ -5,91 +5,7 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{% static 'accounts/css/auth.css' %}">
-<style>
-    .upload-container {
-        max-width: 600px;
-        margin: 0.5rem auto;
-        padding: 0.75rem;
-    }
-    .upload-info {
-        background: #e3f2fd;
-        padding: 0.75rem;
-        border-radius: 8px;
-        margin-bottom: 0.75rem;
-        border-left: 4px solid #2196F3;
-    }
-    .upload-info h4 {
-        margin-bottom: 0.4rem;
-        color: #1976d2;
-        font-size: 0.95rem;
-    }
-    .upload-info ul {
-        margin: 0.4rem 0;
-        padding-left: 1.25rem;
-        font-size: 0.9rem;
-    }
-    .upload-info p {
-        margin-top: 0.4rem;
-        font-size: 0.85rem;
-    }
-    .file-input-wrapper {
-        position: relative;
-        margin-bottom: 0.75rem;
-    }
-    .file-input-label {
-        display: block;
-        padding: 0.75rem;
-        border: 2px dashed #ddd;
-        border-radius: 8px;
-        text-align: center;
-        cursor: pointer;
-        transition: all 0.3s ease;
-        font-size: 0.9rem;
-    }
-    .file-input-label:hover {
-        border-color: #4CAF50;
-        background: #f1f8f4;
-    }
-    .file-name {
-        margin-top: 0.4rem;
-        color: #4CAF50;
-        font-weight: 500;
-        font-size: 0.85rem;
-    }
-    .file-name-hidden {
-        display: none;
-    }
-    .file-input-hidden {
-        display: none;
-    }
-    .processing-warning {
-        background: #fff3cd;
-        border: 2px solid #ffc107;
-        border-radius: 8px;
-        padding: 0.75rem;
-        margin-bottom: 0.75rem;
-        color: #856404;
-    }
-    .processing-warning h4 {
-        margin: 0 0 0.4rem 0;
-        color: #856404;
-        font-size: 0.95rem;
-    }
-    .processing-warning p {
-        margin: 0.3rem 0;
-        font-size: 0.9rem;
-    }
-    .file-input-disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-        pointer-events: none;
-    }
-    .file-input-disabled .file-input-label {
-        background: #f5f5f5;
-        border-color: #ccc;
-        cursor: not-allowed;
-    }
-</style>
+<link rel="stylesheet" href="{% static 'fasta_processor/css/upload.css' %}">
 {% endblock %}
 
 {% block content %}
@@ -142,9 +58,9 @@
                 <div class="file-input-wrapper {% if has_running_job %}file-input-disabled{% endif %}">
                     <label for="id_files" class="file-input-label">
                         📁 Click to select files or drag and drop (up to 3 files)
-                        <input type="file" id="id_files" name="files" accept=".fasta,.fa,.fas,.fna,.ffn,.faa,.frn" multiple {% if not has_running_job %}required{% endif %} style="display: none;" onchange="showFileNames(this)" {% if has_running_job %}disabled{% endif %}>
+                        <input type="file" id="id_files" name="files" accept=".fasta,.fa,.fas,.fna,.ffn,.faa,.frn" multiple {% if not has_running_job %}required{% endif %} class="file-input-hidden" onchange="showFileNames(this)" {% if has_running_job %}disabled{% endif %}>
                     </label>
-                    <div id="file-names" class="file-name" style="display: none;"></div>
+                    <div id="file-names" class="file-name file-name-hidden"></div>
                 </div>
                 <small class="form-text text-muted">You can select multiple files (Ctrl+Click or Cmd+Click) - maximum 3 files</small>
             </div>
@@ -169,29 +85,9 @@
         </div>
     </div>
 </div>
+{% endblock %}
 
-<script>
-function showFileNames(input) {
-    const fileNamesDiv = document.getElementById('file-names');
-    if (input.files && input.files.length > 0) {
-        const fileCount = input.files.length;
-        if (fileCount > 3) {
-            fileNamesDiv.innerHTML = '<span style="color: #c62828;">⚠️ Too many files! Maximum 3 files allowed. You selected ' + fileCount + ' files.</span>';
-            fileNamesDiv.style.display = 'block';
-            input.value = ''; // Clear selection
-            return;
-        }
-        
-        let fileList = '<strong>Selected ' + fileCount + ' file(s):</strong><br>';
-        for (let i = 0; i < fileCount; i++) {
-            fileList += '• ' + input.files[i].name + '<br>';
-        }
-        fileNamesDiv.innerHTML = fileList;
-        fileNamesDiv.style.display = 'block';
-    } else {
-        fileNamesDiv.style.display = 'none';
-    }
-}
-</script>
+{% block extra_js %}
+<script src="{% static 'fasta_processor/js/upload.js' %}"></script>
 {% endblock %}
 

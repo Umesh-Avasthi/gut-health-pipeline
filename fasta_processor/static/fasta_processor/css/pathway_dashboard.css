@@ -1,0 +1,194 @@
+.dashboard-container {
+    max-width: 1400px;
+    margin: 0.5rem auto;
+    padding: 0 0.75rem;
+}
+.dashboard-header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 1rem 1.25rem;
+    border-radius: 12px;
+    margin-bottom: 0.75rem;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+}
+.dashboard-header h1 {
+    margin: 0 0 0.3rem 0;
+    font-size: 1.5rem;
+}
+.dashboard-header p {
+    margin: 0;
+    opacity: 0.9;
+    font-size: 0.9rem;
+}
+.back-button {
+    margin-bottom: 0.5rem;
+}
+.summary-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 0.6rem;
+    margin-bottom: 0.75rem;
+}
+.summary-card {
+    background: white;
+    padding: 0.75rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    text-align: center;
+}
+.summary-card .label {
+    font-size: 0.85rem;
+    margin-bottom: 0.3rem;
+}
+.summary-card .number {
+    font-size: 2rem;
+    font-weight: bold;
+    margin: 0.3rem 0;
+}
+.summary-card .description {
+    font-size: 0.8rem;
+    margin-top: 0.3rem;
+}
+.summary-card.critical .number { color: #d32f2f; }
+.summary-card.low .number { color: #f57c00; }
+.summary-card.normal .number { color: #388e3c; }
+.summary-card.optimal .number { color: #1976d2; }
+.pathway-card {
+    background: white;
+    border-radius: 8px;
+    padding: 0.75rem;
+    margin-bottom: 0.6rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+    border-left: 4px solid #ddd;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+.pathway-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+}
+.pathway-card.critical { border-left-color: #d32f2f; }
+.pathway-card.low { border-left-color: #f57c00; }
+.pathway-card.normal { border-left-color: #388e3c; }
+.pathway-card.optimal { border-left-color: #1976d2; }
+.pathway-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 0.5rem;
+}
+.pathway-title {
+    flex: 1;
+}
+.pathway-title h3 {
+    margin: 0 0 0.2rem 0;
+    color: #333;
+    font-size: 1.1rem;
+}
+.pathway-title .description {
+    color: #666;
+    font-size: 0.85rem;
+    margin-top: 0.2rem;
+}
+.status-badge {
+    padding: 0.35rem 0.75rem;
+    border-radius: 20px;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.status-critical {
+    background: #ffebee;
+    color: #d32f2f;
+}
+.status-low {
+    background: #fff3e0;
+    color: #f57c00;
+}
+.status-normal {
+    background: #e8f5e9;
+    color: #388e3c;
+}
+.status-optimal {
+    background: #e3f2fd;
+    color: #1976d2;
+}
+.pathway-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 0.6rem;
+    margin: 0.6rem 0;
+    padding: 0.6rem;
+    background: #f5f5f5;
+    border-radius: 8px;
+}
+.metric-item {
+    text-align: center;
+}
+.metric-label {
+    font-size: 0.8rem;
+    color: #666;
+    margin-bottom: 0.2rem;
+}
+.metric-value {
+    font-size: 1.25rem;
+    font-weight: bold;
+    color: #333;
+}
+.score-bar {
+    width: 100%;
+    height: 24px;
+    background: #e0e0e0;
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+    position: relative;
+}
+.score-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4CAF50, #45a049);
+    transition: width 0.5s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.9rem;
+}
+.score-fill.critical { background: linear-gradient(90deg, #d32f2f, #c62828); }
+.score-fill.low { background: linear-gradient(90deg, #f57c00, #ef6c00); }
+.score-fill.normal { background: linear-gradient(90deg, #388e3c, #2e7d32); }
+.score-fill.optimal { background: linear-gradient(90deg, #1976d2, #1565c0); }
+.health-impact {
+    margin-top: 0.6rem;
+    padding: 0.6rem;
+    background: #fff9c4;
+    border-left: 4px solid #fbc02d;
+    border-radius: 4px;
+}
+.health-impact strong {
+    color: #f57f17;
+    display: block;
+    margin-bottom: 0.3rem;
+    font-size: 0.9rem;
+}
+.health-impact p {
+    margin: 0;
+    color: #555;
+    line-height: 1.5;
+    font-size: 0.85rem;
+}
+.empty-state {
+    text-align: center;
+    padding: 1.5rem 0.5rem;
+    color: #757575;
+}
+.empty-state h3 {
+    margin: 0.5rem 0;
+    font-size: 1.1rem;
+}
+.empty-state p {
+    margin: 0.5rem 0;
+    font-size: 0.9rem;
+}
+

@@ -5,8 +5,8 @@ from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.conf import settings
 from django.http import HttpResponse
-from .models import Profile, OTP
-from .utils import send_otp_sms
+from django.db import IntegrityError
+from .models import Profile
 from .forms import RegistrationForm, LoginForm
 
 def home(request):
@@ -41,25 +41,41 @@ def register_view(request):
             phone = form.cleaned_data.get("phone")
             password = form.cleaned_data.get("password")
 
-            # ✅ GENERATE AND SEND OTP
-            otp = OTP.generate_otp(phone)
-            
-            # Send OTP via SMS
-            if send_otp_sms(phone, otp.otp_code):
-                # Store registration data in session (including OTP for testing)
-                request.session['registration_data'] = {
-                    'name': name,
-                    'email': email,
-                    'phone': phone,
-                    'password': password,
-                    'otp_code': otp.otp_code  # Store OTP in session for testing (remove in production)
-                }
-                messages.success(request, f"OTP sent to {phone}. Please check your phone or console.")
-                return redirect("verify_otp")
-            else:
+            # Check if user already exists (case-insensitive check)
+            email_lower = email.lower().strip()
+            if User.objects.filter(username__iexact=email_lower).exists():
+                form.add_error('email', 'This email is already registered. Please login instead.')
                 return render(request, "accounts/register.html", {
-                    "form": form,
-                    "error": "Failed to send OTP. Please try again."
+                    "form": form
+                })
+            
+            # Create user directly (OTP verification removed)
+            try:
+                user = User.objects.create_user(
+                    username=email_lower,  # Use lowercase for consistency
+                    email=email_lower,
+                    password=password,
+                    first_name=name
+                )
+                
+                Profile.objects.create(user=user, phone=phone)
+                
+                messages.success(request, "Registration successful! Please login.")
+                return redirect("login")
+            except IntegrityError as e:
+                # Handle database constraint violations (e.g., duplicate username)
+                if 'UNIQUE constraint failed' in str(e) or 'username' in str(e):
+                    form.add_error('email', 'This email is already registered. Please login instead.')
+                else:
+                    form.add_error(None, 'Registration failed due to a database error. Please try again.')
+                return render(request, "accounts/register.html", {
+                    "form": form
+                })
+            except Exception as e:
+                # Handle other unexpected errors
+                form.add_error(None, f'Registration failed: {str(e)}. Please try again.')
+                return render(request, "accounts/register.html", {
+                    "form": form
                 })
         else:
             # Form has validation errors
@@ -74,104 +90,7 @@ def register_view(request):
     })
 
 
-# ---------------- VERIFY OTP ----------------
-def verify_otp_view(request):
-    # Check if registration data exists in session
-    registration_data = request.session.get('registration_data')
-    
-    if not registration_data:
-        messages.error(request, "Registration session expired. Please register again.")
-        return redirect("register")
-    
-    if request.method == "POST":
-        entered_otp = request.POST.get("otp")
-        phone = registration_data.get('phone')
-        
-        if not entered_otp:
-            return render(request, "accounts/verify_otp.html", {
-                "error": "Please enter OTP",
-                "phone": phone
-            })
-        
-        # Find valid OTP for this phone
-        try:
-            otp = OTP.objects.filter(phone=phone, is_verified=False).latest('created_at')
-            
-            if otp.is_expired():
-                return render(request, "accounts/verify_otp.html", {
-                    "error": "OTP has expired. Please request a new one.",
-                    "phone": phone
-                })
-            
-            if otp.otp_code == entered_otp:
-                # OTP is correct, mark as verified
-                otp.is_verified = True
-                otp.save()
-                
-                # Create user
-                name = registration_data.get('name')
-                email = registration_data.get('email')
-                password = registration_data.get('password')
-                phone = registration_data.get('phone')
-                
-                user = User.objects.create_user(
-                    username=email,
-                    email=email,
-                    password=password,
-                    first_name=name
-                )
-                
-                Profile.objects.create(user=user, phone=phone)
-                
-                # Clear session data
-                del request.session['registration_data']
-                
-                messages.success(request, "Registration successful! Please login.")
-                return redirect("login")
-            else:
-                return render(request, "accounts/verify_otp.html", {
-                    "error": "Invalid OTP. Please try again.",
-                    "phone": phone
-                })
-                
-        except OTP.DoesNotExist:
-            return render(request, "accounts/verify_otp.html", {
-                "error": "OTP not found. Please request a new one.",
-                "phone": phone
-            })
-    
-    # GET request - show OTP verification form
-    phone = registration_data.get('phone')
-    # For development: Show OTP in template (remove in production)
-    dev_otp = registration_data.get('otp_code') if settings.DEBUG else None
-    return render(request, "accounts/verify_otp.html", {
-        "phone": phone,
-        "dev_otp": dev_otp  # Only show in DEBUG mode
-    })
-
-
-# ---------------- RESEND OTP ----------------
-def resend_otp_view(request):
-    if request.method != "POST":
-        return redirect("register")
-    
-    registration_data = request.session.get('registration_data')
-    
-    if not registration_data:
-        messages.error(request, "Registration session expired. Please register again.")
-        return redirect("register")
-    
-    phone = registration_data.get('phone')
-    
-    # Generate new OTP
-    otp = OTP.generate_otp(phone)
-    
-    if send_otp_sms(phone, otp.otp_code):
-        messages.success(request, f"New OTP sent to {phone}.")
-    else:
-        messages.error(request, "Failed to send OTP. Please try again.")
-    
-    return redirect("verify_otp")
+# OTP verification removed - registration now happens directly
 
 
 # ---------------- LOGIN ----------------
@@ -180,22 +99,39 @@ def login_view(request):
         form = LoginForm(request, data=request.POST)
         
         if form.is_valid():
-            email = form.cleaned_data.get("username")
+            email = form.cleaned_data.get("username", "").strip().lower()
             password = form.cleaned_data.get("password")
 
-            user = authenticate(username=email, password=password)
-            if user:
-                login(request, user)
-                # Store last logged-in user info in cookie (persists across logout)
-                response = redirect("dashboard")
-                response.set_cookie('last_login_email', user.username, max_age=60*60*24*30)  # 30 days
-                return response
-
-            # Authentication failed
-            return render(request, "registration/login.html", {
-                "form": form,
-                "error": "Invalid email or password"
-            })
+            # Try to authenticate with email as username (case-insensitive)
+            # First, find the actual username (case-sensitive) in database
+            try:
+                actual_user = User.objects.get(username__iexact=email)
+                user = authenticate(username=actual_user.username, password=password)
+            except User.DoesNotExist:
+                user = None
+            
+            # If authentication fails, check if user exists to provide better error message
+            if not user:
+                try:
+                    user_exists = User.objects.filter(username__iexact=email).exists()
+                    if user_exists:
+                        error_msg = "Invalid password. Please check your password and try again."
+                    else:
+                        error_msg = "No account found with this email. Please register first."
+                except Exception:
+                    error_msg = "Invalid email or password"
+                
+                return render(request, "registration/login.html", {
+                    "form": form,
+                    "error": error_msg
+                })
+            
+            # Authentication successful
+            login(request, user)
+            # Store last logged-in user info in cookie (persists across logout)
+            response = redirect("dashboard")
+            response.set_cookie('last_login_email', user.username, max_age=60*60*24*30)  # 30 days
+            return response
         else:
             # Form has validation errors
             return render(request, "registration/login.html", {

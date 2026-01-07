@@ -1,6 +1,6 @@
 """
-Template for merging eggNOG results only (when KofamScan is not available).
-This script creates the standardized annotation schema (FROZEN) with eggNOG data only.
+Template for merging eggNOG or KofamScan results only.
+This script creates the standardized annotation schema (FROZEN).
 """
 import pandas as pd
 import re
@@ -8,11 +8,19 @@ import re
 EGGNOG_FILE = r"{EGGNOG_FILE}"
 OUTPUT_FILE = r"{OUTPUT_FILE}"
 
-# Load eggnog data
+# Load data
 df = pd.read_csv(EGGNOG_FILE)
 
+# Filter out invalid protein IDs (header rows, etc.)
+if len(df) > 0:
+    # Remove rows with invalid protein IDs
+    invalid_patterns = ['---', '-------', 'Scores', 'E-value', '[No', 'Passed', 'Initial', 'Domain', 'protein_id']
+    df = df[~df['protein_id'].astype(str).isin(invalid_patterns)]
+    # Remove rows where protein_id is just dashes or numbers
+    df = df[~df['protein_id'].astype(str).str.match(r'^[-0-9.]+$')]
+
 # ============================================================================
-# STANDARDIZED ANNOTATION SCHEMA (FROZEN) - eggNOG only
+# STANDARDIZED ANNOTATION SCHEMA (FROZEN)
 # ============================================================================
 
 # 1. Extract contig_id from protein_id
@@ -37,21 +45,38 @@ def extract_contig_id(protein_id):
     # Default: use protein_id as contig_id (if no pattern matches)
     return protein_id_str.split('_')[0] if '_' in protein_id_str else protein_id_str
 
-df["contig_id"] = df["protein_id"].apply(extract_contig_id)
+if len(df) > 0:
+    df["contig_id"] = df["protein_id"].apply(extract_contig_id)
+else:
+    df["contig_id"] = None
 
-# 2. Rename columns to match schema
-df = df.rename(columns={
-    "ec_number": "EC_number",
-    "kegg_ko": "KEGG_KO",
-    "enzyme_name": "enzyme_name",
-    "kegg_pathway": "pathway"
-})
+# 2. Handle KofamScan data (has kegg_ko_kofam) or eggNOG data (has kegg_ko)
+if "kegg_ko_kofam" in df.columns:
+    # KofamScan data
+    df["KEGG_KO"] = df["kegg_ko_kofam"]
+    df["EC_number"] = "-"
+    df["enzyme_name"] = "Unknown_enzyme"
+    df["pathway"] = "-"
+    df["annotation_source"] = "kofamscan"
+elif "kegg_ko" in df.columns:
+    # eggNOG data
+    df = df.rename(columns={
+        "ec_number": "EC_number",
+        "kegg_ko": "KEGG_KO",
+        "enzyme_name": "enzyme_name",
+        "kegg_pathway": "pathway"
+    })
+    df["annotation_source"] = "eggnog"
+else:
+    # No KO column - create empty
+    df["KEGG_KO"] = "-"
+    df["EC_number"] = "-"
+    df["enzyme_name"] = "Unknown_enzyme"
+    df["pathway"] = "-"
+    df["annotation_source"] = "unknown"
 
 # 3. Set confidence_score (MEDIUM since only one source)
 df["confidence_score"] = "MEDIUM"
-
-# 4. Set annotation_source
-df["annotation_source"] = "eggnog"
 
 # 5. Select and reorder columns to match frozen schema
 final_columns = [
@@ -77,4 +102,3 @@ df.to_csv(OUTPUT_FILE, index=False)
 
 print(f"✅ Standardized annotation table created (eggnog only): {len(df)} entries")
 print(f"   - All entries: MEDIUM confidence (single source)")
-

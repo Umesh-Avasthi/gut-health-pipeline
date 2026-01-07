@@ -91,6 +91,10 @@ body {
     gap: 0.75rem;
 }
 
+.logout-form {
+    display: inline;
+}
+
 .nav-links span {
     color: var(--text-secondary);
     font-size: 0.9rem;

@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-2l7c5y*htbt4(7zudkno5^ax&^a%w@k8*+liik9wuj3w@u-04w
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '0.0.0.0']
 
 
 # Application definition
@@ -143,10 +143,10 @@ if static_dir.exists():
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
 
-# EGGNOG Database Path (WSL path)
+# EGGNOG Database Path (Linux path)
 EGGNOG_DB_PATH = Path('/home/ser1dai/eggnog_db_final')
 
-# KOFAM Database Path (WSL path)
+# KOFAM Database Path (Linux path)
 KOFAM_DB_PATH = Path('/home/ser1dai/eggnog_db_final/kofam_db')
 
 # FASTA Processing Resource Configuration

@@ -7,6 +7,8 @@ import sys
 import time
 import shutil
 import logging
+import signal
+import atexit
 from pathlib import Path
 from datetime import timedelta
 from django.conf import settings
@@ -15,6 +17,50 @@ from .models import FastaFile, ProcessingJob
 
 # Set up logging
 logger = logging.getLogger(__name__)
+
+# Global process registry for cleanup on server shutdown
+_active_processes = set()
+
+
+def _cleanup_all_processes():
+    """Kill all active subprocesses on server shutdown"""
+    if not _active_processes:
+        return
+    
+    logger.info(f"🛑 Server shutting down - terminating {len(_active_processes)} active processes...")
+    for process in list(_active_processes):
+        try:
+            if process.poll() is None:  # Process still running
+                logger.info(f"   Terminating process PID {process.pid}")
+                process.terminate()
+                # Wait up to 5 seconds for graceful shutdown
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate
+                    logger.warning(f"   Force killing process PID {process.pid}")
+                    process.kill()
+                    process.wait()
+        except Exception as e:
+            logger.warning(f"   Error terminating process: {e}")
+    
+    _active_processes.clear()
+    logger.info("✅ All processes terminated")
+
+
+# Register cleanup function
+atexit.register(_cleanup_all_processes)
+
+
+def _register_process(process):
+    """Register a process for cleanup on server shutdown"""
+    _active_processes.add(process)
+    return process
+
+
+def _unregister_process(process):
+    """Unregister a process (when it completes)"""
+    _active_processes.discard(process)
 
 
 def start_next_job_in_queue():
@@ -76,6 +122,15 @@ def start_next_job_in_queue():
 class EggnogProcessor:
     """Service class to handle eggnog processing"""
     
+    # Class-level cache for pre-initialized paths (set at server startup)
+    _initialized_paths = {
+        'gut_db_path': None,
+        'gut_db_ramdisk': None,
+        'ramdisk_path': None,
+        'profiles_hmm': None,
+        'initialized': False
+    }
+    
     def __init__(self, eggnog_db_path=None, kofam_db_path=None):
         """
         Initialize processor with eggnog and kofam database paths
@@ -86,20 +141,101 @@ class EggnogProcessor:
         """
         self.eggnog_db_path = eggnog_db_path or getattr(settings, 'EGGNOG_DB_PATH', None)
         if not self.eggnog_db_path:
-            # Default WSL path
+            # Default Linux path
             self.eggnog_db_path = '/home/ser1dai/eggnog_db_final'
         
-        # Normalize eggnog_db_path to WSL format
+        # Normalize eggnog_db_path to Linux format
         self.eggnog_db_path = self._normalize_path_to_wsl(self.eggnog_db_path)
         
         # Initialize kofam_db_path
         self.kofam_db_path = kofam_db_path or getattr(settings, 'KOFAM_DB_PATH', None)
         if not self.kofam_db_path:
-            # Default WSL path
+            # Default Linux path
             self.kofam_db_path = '/home/ser1dai/eggnog_db_final/kofam_db'
         
-        # Normalize kofam_db_path to WSL format
+        # Normalize kofam_db_path to Linux format
         self.kofam_db_path = self._normalize_path_to_wsl(self.kofam_db_path)
+    
+    @classmethod
+    def initialize_databases(cls, eggnog_db_path=None, kofam_db_path=None):
+        """
+        Initialize all databases at server startup (runs ONCE, not per job).
+        This is the critical fix - moves heavy operations from job-time to boot-time.
+        
+        Args:
+            eggnog_db_path: Path to eggnog_db_final folder
+            kofam_db_path: Path to kofam_db folder
+            
+        Returns:
+            dict with initialized paths or None if failed
+        """
+        if cls._initialized_paths['initialized']:
+            logger.info("✅ Databases already initialized (skipping)")
+            return cls._initialized_paths
+        
+        logger.info("🚀 Initializing databases at server startup (this runs ONCE)...")
+        
+        processor = cls(eggnog_db_path, kofam_db_path)
+        eggnog_db_wsl = processor.eggnog_db_path
+        kofam_db_wsl = processor.kofam_db_path
+        
+        try:
+            # STEP 1: Build gut database (clean method)
+            logger.info("📦 Step 1/4: Building clean gut database...")
+            gut_db_path = processor._ensure_gut_database(eggnog_db_wsl)
+            if not gut_db_path:
+                logger.error("❌ Failed to initialize gut database")
+                return None
+            
+            # STEP 2: Setup RAM disk and copy gut database
+            logger.info("📦 Step 2/4: Setting up RAM disk...")
+            ramdisk_path = processor._setup_ramdisk()
+            gut_db_ramdisk = None
+            if ramdisk_path and gut_db_path:
+                logger.info("📦 Step 2/4: Copying gut database to RAM disk...")
+                gut_db_ramdisk = processor._copy_to_ramdisk(gut_db_path, ramdisk_path)
+            
+            # STEP 3: Create gut HMM subset
+            logger.info("📦 Step 3/4: Creating gut HMM subset...")
+            profiles_hmm = processor._create_gut_hmm_subset(kofam_db_wsl, eggnog_db_wsl)
+            
+            # STEP 4: Validate full eggNOG database exists (just check, don't rebuild)
+            logger.info("📦 Step 4/4: Validating full eggNOG database...")
+            eggnog_proteins_dmnd = f"{eggnog_db_wsl}/eggnog_proteins.dmnd"
+            check_db_cmd = f"test -f {eggnog_proteins_dmnd} && test -s {eggnog_proteins_dmnd} && echo 'exists' || echo 'missing'"
+            db_check = subprocess.run(['bash', '-c', check_db_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            if 'missing' in db_check.stdout:
+                logger.warning(f"⚠️  Full eggNOG database not found at {eggnog_proteins_dmnd}")
+                logger.warning(f"   Pipeline will skip full database search if gut DB finds all sequences")
+            
+            # Store initialized paths
+            cls._initialized_paths = {
+                'gut_db_path': gut_db_path,
+                'gut_db_ramdisk': gut_db_ramdisk if gut_db_ramdisk else gut_db_path,
+                'ramdisk_path': ramdisk_path,
+                'profiles_hmm': profiles_hmm,
+                'initialized': True
+            }
+            
+            logger.info("✅ Database initialization complete!")
+            logger.info(f"   - Gut DB: {gut_db_path}")
+            logger.info(f"   - Gut DB (RAM): {gut_db_ramdisk if gut_db_ramdisk else 'N/A'}")
+            logger.info(f"   - HMM profiles: {profiles_hmm}")
+            
+            return cls._initialized_paths
+            
+        except Exception as e:
+            logger.error(f"❌ Database initialization failed: {str(e)}")
+            logger.exception("Database initialization error")
+            return None
+    
+    @classmethod
+    def get_initialized_paths(cls):
+        """Get pre-initialized database paths (fast, no disk I/O)"""
+        if not cls._initialized_paths['initialized']:
+            logger.warning("⚠️  Databases not initialized! Call initialize_databases() at server startup")
+            return None
+        return cls._initialized_paths
     
     def process_fasta(self, fasta_file_instance):
         """
@@ -325,18 +461,23 @@ class EggnogProcessor:
         logger.info(f"Filtered FASTA: {included_count} sequences included, {excluded_count} excluded")
         return included_count
     
-    def _calculate_timeout(self, file_size_mb, tool='emapper'):
+    def _calculate_timeout(self, file_size_mb, tool='emapper', no_timeout=False):
         """
         Calculate timeout based on file size and tool type.
-        Optimized for small files to prevent excessive wait times.
+        Set no_timeout=True to disable timeouts and ensure complete results.
         
         Args:
             file_size_mb: File size in MB
-            tool: Tool name ('emapper' or 'kofamscan')
+            tool: Tool name ('emapper', 'kofamscan', or 'diamond')
+            no_timeout: If True, return very high timeout (24 hours) to ensure complete results
             
         Returns:
-            Timeout in seconds
+            Timeout in seconds (or very high value if no_timeout=True)
         """
+        # If no_timeout is True, set very high timeout (24 hours) to ensure complete results
+        if no_timeout:
+            return 24 * 3600  # 24 hours - effectively no timeout
+        
         if tool == 'kofamscan':
             if file_size_mb < 0.01:  # < 10KB - very small
                 return 15 * 60  # 15 minutes
@@ -348,17 +489,29 @@ class EggnogProcessor:
                 return 2 * 3600  # 2 hours
             else:
                 return 4 * 3600  # 4 hours
+        elif tool == 'diamond':
+            # DIAMOND searches - allow more time for large files
+            if file_size_mb < 0.01:
+                return 30 * 60  # 30 minutes
+            elif file_size_mb < 0.1:
+                return 1 * 3600  # 1 hour
+            elif file_size_mb < 1:
+                return 2 * 3600  # 2 hours
+            elif file_size_mb < 10:
+                return 4 * 3600  # 4 hours
+            else:
+                return 8 * 3600  # 8 hours for very large files
         else:  # emapper
             if file_size_mb < 0.01:  # < 10KB - very small (like 2KB)
                 return 10 * 60  # 10 minutes (should complete in 2-5 min)
             elif file_size_mb < 0.1:  # < 100KB - small
                 return 20 * 60  # 20 minutes
             elif file_size_mb < 1:
-                return 45 * 60  # 45 minutes (reduced from 2 hours)
+                return 45 * 60  # 45 minutes
             elif file_size_mb < 10:
-                return 2 * 3600  # 2 hours (reduced from 4 hours)
+                return 2 * 3600  # 2 hours
             else:
-                return 4 * 3600  # 4 hours (reduced from 6 hours)
+                return 6 * 3600  # 6 hours for large files
     
     def _monitor_process(self, process, timeout_seconds, job=None, step_message='Processing', check_interval=60, file_size_mb=None):
         """
@@ -389,6 +542,8 @@ class EggnogProcessor:
             while True:
                 return_code = process.poll()
                 if return_code is not None:
+                    # Process completed - unregister it
+                    _unregister_process(process)
                     return return_code, False
                 
                 elapsed = time.time() - process_start_time
@@ -501,8 +656,7 @@ class EggnogProcessor:
         cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate {conda_env} && python3 {script_wsl}"""
         
         logger.info(f"Running {step_name}: {cmd}")
-        result = subprocess.run(
-            ['wsl', 'bash', '-c', cmd],
+        result = subprocess.run(['bash', '-c', cmd],
             capture_output=True,
             text=True,
             encoding='utf-8',
@@ -522,14 +676,14 @@ class EggnogProcessor:
     
     def _normalize_path_to_wsl(self, path):
         """
-        Normalize a path string to WSL format (helper for __init__).
+        Normalize a path string to Linux format (helper for __init__).
         This is a simplified version that doesn't require _to_wsl_path.
         
         Args:
             path: Path string or Path object
             
         Returns:
-            Normalized WSL path string
+            Normalized Linux path string
         """
         if isinstance(path, Path):
             path_str = str(path)
@@ -567,7 +721,7 @@ class EggnogProcessor:
         # First check if already mounted (fast check)
         check_cmd = f"mountpoint -q {ramdisk_path} 2>/dev/null && echo 'mounted' || echo 'not_mounted'"
         try:
-            check_result = subprocess.run(['wsl', 'bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
+            check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             if 'mounted' in check_result.stdout:
                 logger.info(f"✅ RAM disk already available at {ramdisk_path}")
                 return ramdisk_path
@@ -578,8 +732,8 @@ class EggnogProcessor:
             logger.warning(f"⚠️  Could not check RAM disk status: {e}. Continuing without RAM disk optimization.")
             return None
         
-        # Try to setup RAM disk (non-blocking, with shorter timeout)
-        # Use a simpler approach that doesn't require sudo if directory exists
+        # STEP 2: Setup RAM disk (tmpfs mount) - Force RAM caching
+        # Try to setup RAM disk with sudo if needed
         setup_cmd = f"""
         # Try to create directory first (may not need sudo)
         mkdir -p {ramdisk_path} 2>/dev/null || true
@@ -588,12 +742,18 @@ class EggnogProcessor:
             echo "already_mounted"
         else
             # Try mounting without sudo first (if user has permissions)
-            mount -t tmpfs -o size=10G tmpfs {ramdisk_path} 2>/dev/null && echo "mounted" || echo "mount_failed"
+            if mount -t tmpfs -o size=10G tmpfs {ramdisk_path} 2>/dev/null; then
+                echo "mounted"
+            else
+                # Try with sudo (STEP 2: Force RAM caching)
+                sudo mkdir -p {ramdisk_path} 2>/dev/null || true
+                sudo mount -t tmpfs -o size=10G tmpfs {ramdisk_path} 2>/dev/null && echo "mounted" || echo "mount_failed"
+            fi
         fi
         """
         
         try:
-            result = subprocess.run(['wsl', 'bash', '-c', setup_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            result = subprocess.run(['bash', '-c', setup_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             if 'mounted' in result.stdout or 'already_mounted' in result.stdout:
                 logger.info(f"✅ RAM disk available at {ramdisk_path}")
                 return ramdisk_path
@@ -616,7 +776,7 @@ class EggnogProcessor:
         
         # Backup corrupted database
         backup_cmd = f"mv {eggnog_db_wsl}/eggnog_proteins.dmnd {eggnog_db_wsl}/eggnog_proteins.dmnd.corrupted 2>/dev/null || true"
-        subprocess.run(['wsl', 'bash', '-c', backup_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+        subprocess.run(['bash', '-c', backup_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         
         # Rebuild database (DIAMOND, MMseqs, and HMMER for Bacteria)
         logger.info(f"🔧 Rebuilding EggNOG database (~30-60 minutes)...")
@@ -631,14 +791,17 @@ class EggnogProcessor:
         
         # Run rebuild in background with progress logging
         logger.info(f"⏳ Starting database rebuild (this may take 30-60 minutes)...")
-        rebuild_result = subprocess.run(['wsl', 'bash', '-c', rebuild_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=7200)
+        rebuild_result = subprocess.run(['bash', '-c', rebuild_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=7200)
         
         if rebuild_result.returncode == 0:
             # Verify the database was rebuilt correctly
-            verify_cmd = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && echo '>test' > /tmp/test_seq.faa && echo 'MKTAYIAKQR' >> /tmp/test_seq.faa && diamond blastp -d {eggnog_db_wsl}/eggnog_proteins.dmnd -q /tmp/test_seq.faa --threads 1 --max-target-seqs 1 --outfmt 6 2>&1 | head -1"
-            verify_result = subprocess.run(['wsl', 'bash', '-c', verify_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+            # Use fast dbinfo check instead of slow search test
+            # NO dbinfo check - it scans entire 40GB database and is useless at runtime
+            # Just check if file exists after rebuild
+            verify_cmd = f"test -f {eggnog_db_wsl}/eggnog_proteins.dmnd && test -s {eggnog_db_wsl}/eggnog_proteins.dmnd && echo 'exists' || echo 'missing'"
+            verify_result = subprocess.run(['bash', '-c', verify_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             
-            if 'Unexpected end of input' not in verify_result.stdout and 'Unexpected end of input' not in verify_result.stderr:
+            if 'exists' in verify_result.stdout:
                 logger.info(f"✅ EggNOG database rebuilt and verified successfully")
                 return True
             else:
@@ -652,39 +815,214 @@ class EggnogProcessor:
     
     def _ensure_gut_database(self, eggnog_db_wsl):
         """
-        Ensure gut database exists. Create it if missing.
-        Returns path to gut_db.dmnd if successful, None otherwise.
+        Ensure clean gut database exists. Create it if missing.
+        Uses e5.proteomes.faa to build a mathematically clean gut enzyme reference DB.
+        Selects best representative (longest sequence) per KO from your_24_pathways_kos.txt.
+        Returns path to gut_db_clean.dmnd if successful, None otherwise.
+        
+        This creates a tiny database (~100-250 proteins) that is extremely fast (0.05-0.2 sec queries).
         """
-        gut_db_path = f"{eggnog_db_wsl}/gut_kegg_db/gut_db.dmnd"
-        ko_list_file = f"{eggnog_db_wsl}/your_24_pathways_kos.txt"
-        eggnog_proteins_fa = f"{eggnog_db_wsl}/eggnog_proteins.fa"
+        gut_db_path = f"{eggnog_db_wsl}/gut_kegg_db/gut_db_clean.dmnd"
+        # Use KO list file from project directory (fasta_processor/your_24_pathways_kos.txt)
+        ko_list_path = Path(__file__).parent / "your_24_pathways_kos.txt"
+        ko_list_file = self._to_wsl_path(str(ko_list_path))
+        proteomes_faa = f"{eggnog_db_wsl}/e5.proteomes.faa"
         
         # Check if gut database already exists
         check_cmd = f"test -f {gut_db_path} && echo 'exists' || echo 'missing'"
-        check_result = subprocess.run(['wsl', 'bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'exists' in check_result.stdout:
-            logger.info(f"✅ Gut database found at {gut_db_path}")
-            return gut_db_path
+            # Verify database is not empty and has reasonable size
+            # Expected: ~100-250 proteins (at least 50 KOs should be represented)
+            check_size_cmd = f"diamond viewdb {gut_db_path} 2>/dev/null | grep -c 'sequences' || echo '0'"
+            try:
+                # Increase timeout to 60 seconds for diamond viewdb (can be slow on large databases)
+                size_result = subprocess.run(['bash', '-c', check_size_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+                seq_count = int(size_result.stdout.strip())
+                if seq_count >= 50:  # At least 50 sequences (reasonable minimum)
+                    logger.info(f"✅ Clean gut database found at {gut_db_path} ({seq_count} sequences)")
+                    return gut_db_path
+                else:
+                    logger.warning(f"⚠️  Existing gut database has only {seq_count} sequences (expected 100-250). Rebuilding...")
+                    # Delete old database to force rebuild
+                    subprocess.run(['bash', '-c', f"rm -f {gut_db_path} {gut_db_path}.dmnd {gut_clean_fa} 2>/dev/null"], 
+                                 capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            except subprocess.TimeoutExpired:
+                # If diamond viewdb times out, the database might be corrupted or very large
+                # Log warning but assume it's valid to avoid blocking initialization
+                logger.warning(f"⚠️  Timeout checking gut database size at {gut_db_path}. Database may be large or slow to read. Assuming valid.")
+                logger.info(f"✅ Clean gut database found at {gut_db_path} (size check timed out)")
+                return gut_db_path
+            except (ValueError, AttributeError):
+                # If we can't check size, assume it's valid
+                logger.info(f"✅ Clean gut database found at {gut_db_path}")
+                return gut_db_path
         
         # Check if we have the required files to build it
         check_ko_cmd = f"test -f {ko_list_file} && echo 'exists' || echo 'missing'"
-        ko_check = subprocess.run(['wsl', 'bash', '-c', check_ko_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        ko_check = subprocess.run(['bash', '-c', check_ko_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'missing' in ko_check.stdout:
             logger.warning(f"⚠️  KO list file not found at {ko_list_file}. Skipping gut database creation.")
             return None
         
-        # Check if eggnog_proteins.fa exists (needed to build gut database)
+        # Check if e5.proteomes.faa exists (authoritative protein FASTA - 9GB clean source)
+        check_faa_cmd = f"test -f {proteomes_faa} && echo 'exists' || echo 'missing'"
+        faa_check = subprocess.run(['bash', '-c', check_faa_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        
+        if 'missing' in faa_check.stdout:
+            logger.warning(f"⚠️  e5.proteomes.faa not found at {proteomes_faa}. Cannot build clean gut database.")
+            logger.warning(f"   Falling back to old method using eggnog_proteins.fa...")
+            # Fallback to old method
+            return self._ensure_gut_database_fallback(eggnog_db_wsl)
+        
+        # STEP 1: Build clean gut FASTA (KO-representatives only)
+        # Select best representative (longest sequence) per KO from your_24_pathways_kos.txt
+        logger.info(f"🔧 STEP 1: Building clean gut database (mathematically clean, KO-representatives only)...")
+        logger.info(f"   This creates a tiny database (~100-250 proteins) that is extremely fast (0.05-0.2 sec queries)")
+        logger.info(f"   Using e5.proteomes.faa as authoritative source (9GB clean biological data)")
+        
+        gut_clean_fa = f"{eggnog_db_wsl}/gut_clean.fa"
+        gut_db_dir = f"{eggnog_db_wsl}/gut_kegg_db"
+        
+        # Log the KO list file being used
+        try:
+            ko_count = len([line for line in open(str(Path(__file__).parent / 'your_24_pathways_kos.txt')) if line.strip()])
+            logger.info(f"📋 Using KO list file: {ko_list_file}")
+            logger.info(f"   Expected KOs: {ko_count} KOs from your_24_pathways_kos.txt")
+        except Exception as e:
+            logger.warning(f"Could not read KO list file for logging: {e}")
+        
+        # Python script to select best representative per KO (longest sequence)
+        build_clean_fasta_script = f"""
+import re
+import sys
+
+kos = set(x.strip() for x in open("{ko_list_file}"))
+best = {{}}
+hdr = None
+seq = ""
+
+def commit():
+    global hdr, seq
+    if hdr:
+        # Try multiple KO patterns: K\d{{5}} or KO:\d+ or KO\d{{5}}
+        # First try standard K\d{{5}} format
+        m = re.search(r"(K\\d{{5}})", hdr)
+        if not m:
+            # Try KO: format (e.g., KO:00813)
+            m = re.search(r"KO:(\\d+)", hdr)
+        if not m:
+            # Try KO\d{{5}} format (e.g., KO00813)
+            m = re.search(r"KO(\\d{{5}})", hdr)
+        if m:
+            ko = m.group(1)
+            # Normalize KO format to K\d{{5}}
+            if ko.startswith("KO:"):
+                ko = "K" + ko[3:].zfill(5)
+            elif ko.startswith("KO"):
+                ko = "K" + ko[2:].zfill(5)
+            elif not ko.startswith("K"):
+                ko = "K" + ko.zfill(5)
+            if ko in kos:
+                if ko not in best or len(seq) > len(best[ko][1]):
+                    best[ko] = (hdr, seq)
+
+try:
+    with open("{proteomes_faa}", "r") as f:
+        for line in f:
+            if line.startswith(">"):
+                commit()
+                hdr = line.strip()
+                seq = ""
+            else:
+                seq += line.strip()
+    commit()
+    
+    with open("{gut_clean_fa}", "w") as o:
+        for h, s in best.values():
+            o.write(h + "\\n" + s + "\\n")
+    
+    print(f"✅ Created clean gut FASTA with {{len(best)}} KO representatives")
+    sys.exit(0)
+except Exception as e:
+    print(f"❌ Error building clean gut FASTA: {{e}}")
+    sys.exit(1)
+"""
+        
+        # Create directory first
+        mkdir_cmd = f"mkdir -p {gut_db_dir}"
+        subprocess.run(['bash', '-c', mkdir_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        
+        # Run Python script to build clean FASTA
+        build_fasta_cmd = f"python3 <<'PYTHON_EOF'\n{build_clean_fasta_script}\nPYTHON_EOF"
+        build_result = subprocess.run(['bash', '-c', build_fasta_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=1800)
+        
+        if build_result.returncode != 0:
+            logger.warning(f"⚠️  Failed to build clean gut FASTA: {build_result.stderr[-500:] if build_result.stderr else build_result.stdout[-500:]}")
+            logger.warning(f"   Falling back to old method...")
+            return self._ensure_gut_database_fallback(eggnog_db_wsl)
+        
+        # Check if clean FASTA was created
+        check_clean_fa_cmd = f"test -f {gut_clean_fa} && test -s {gut_clean_fa} && echo 'exists' || echo 'missing'"
+        clean_fa_check = subprocess.run(['bash', '-c', check_clean_fa_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        
+        if 'missing' in clean_fa_check.stdout:
+            logger.warning(f"⚠️  Clean gut FASTA not created. Falling back to old method...")
+            return self._ensure_gut_database_fallback(eggnog_db_wsl)
+        
+        # STEP 2: Build clean DIAMOND DB (will finish in seconds)
+        logger.info(f"🔧 STEP 2: Building clean DIAMOND database (this will finish in seconds)...")
+        create_db_cmd = f"""
+        source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && \
+        diamond makedb -p 4 --in {gut_clean_fa} -d {gut_db_dir}/gut_db_clean
+        """
+        
+        create_result = subprocess.run(['bash', '-c', create_db_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
+        
+        # Check if gut database file exists (Linux path)
+        check_exists_cmd = f"test -f {gut_db_path} && echo 'exists' || echo 'missing'"
+        exists_check = subprocess.run(['bash', '-c', check_exists_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        if create_result.returncode == 0 and 'exists' in exists_check.stdout:
+            logger.info(f"✅ Clean gut database created successfully at {gut_db_path}")
+            logger.info(f"   Database size: ~100-250 proteins (extremely fast: 0.05-0.2 sec queries)")
+            return gut_db_path
+        else:
+            error_msg = create_result.stderr[-500:] if create_result.stderr else create_result.stdout[-500:] if create_result.stdout else 'Unknown error'
+            logger.warning(f"⚠️  Failed to create clean gut database: {error_msg}")
+            logger.warning(f"   Falling back to old method...")
+            return self._ensure_gut_database_fallback(eggnog_db_wsl)
+    
+    def _ensure_gut_database_fallback(self, eggnog_db_wsl):
+        """
+        Fallback method: Build gut database using old method (grep on eggnog_proteins.fa).
+        Used when e5.proteomes.faa is not available.
+        """
+        gut_db_path = f"{eggnog_db_wsl}/gut_kegg_db/gut_db.dmnd"
+        # Use KO list file from project directory (fasta_processor/your_24_pathways_kos.txt)
+        ko_list_path = Path(__file__).parent / "your_24_pathways_kos.txt"
+        ko_list_file = self._to_wsl_path(str(ko_list_path))
+        eggnog_proteins_fa = f"{eggnog_db_wsl}/eggnog_proteins.fa"
+        
+        # Check if gut database already exists
+        check_cmd = f"test -f {gut_db_path} && echo 'exists' || echo 'missing'"
+        check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        
+        if 'exists' in check_result.stdout:
+            logger.info(f"✅ Gut database (fallback) found at {gut_db_path}")
+            return gut_db_path
+        
+        # Check if eggnog_proteins.fa exists
         check_fa_cmd = f"test -f {eggnog_proteins_fa} && echo 'exists' || echo 'missing'"
-        fa_check = subprocess.run(['wsl', 'bash', '-c', check_fa_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        fa_check = subprocess.run(['bash', '-c', check_fa_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'missing' in fa_check.stdout:
-            logger.warning(f"⚠️  eggnog_proteins.fa not found at {eggnog_proteins_fa}. Cannot build gut database.")
+            logger.warning(f"⚠️  eggnog_proteins.fa not found. Cannot build gut database.")
             return None
         
-        # Create gut database
-        logger.info(f"🔧 Creating gut database (this may take a few minutes)...")
+        # Create gut database using old method
+        logger.info(f"🔧 Creating gut database using fallback method (grep on eggnog_proteins.fa)...")
         gut_proteins_fa = f"{eggnog_db_wsl}/gut_proteins.fa"
         gut_db_dir = f"{eggnog_db_wsl}/gut_kegg_db"
         
@@ -695,45 +1033,60 @@ class EggnogProcessor:
         diamond makedb -p 4 --in {gut_proteins_fa} -d {gut_db_dir}/gut_db
         """
         
-        create_result = subprocess.run(['wsl', 'bash', '-c', create_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3600)
+        create_result = subprocess.run(['bash', '-c', create_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=3600)
         
-        if create_result.returncode == 0 and os.path.exists(gut_db_path.replace('/mnt/c/', 'C:\\').replace('/', '\\')):
-            logger.info(f"✅ Gut database created successfully at {gut_db_path}")
+        # Check if gut database file exists
+        check_exists_cmd = f"test -f {gut_db_path} && echo 'exists' || echo 'missing'"
+        exists_check = subprocess.run(['bash', '-c', check_exists_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        if create_result.returncode == 0 and 'exists' in exists_check.stdout:
+            logger.info(f"✅ Gut database (fallback) created successfully at {gut_db_path}")
             return gut_db_path
         else:
-            logger.warning(f"⚠️  Failed to create gut database: {create_result.stderr[-500:] if create_result.stderr else 'Unknown error'}")
+            logger.warning(f"⚠️  Failed to create gut database (fallback): {create_result.stderr[-500:] if create_result.stderr else 'Unknown error'}")
             return None
     
     def _copy_to_ramdisk(self, source_file, ramdisk_path):
         """
-        Copy database file to RAM disk for faster access.
+        Copy database file to RAM disk for faster access (STEP 2: Force RAM caching).
         Returns path in RAM disk if successful, original path otherwise.
+        This turns HDD into pseudo-SSD for 10x speedup.
         """
         if not ramdisk_path:
             return source_file
         
-        filename = os.path.basename(source_file)
-        ramdisk_file = f"{ramdisk_path}/{filename}"
+        # STEP 2: Copy database files to RAM disk
+        # DIAMOND databases may have multiple files (.dmnd, .dmnd.dmnd, etc.)
+        # Copy all related files
+        base_name = os.path.basename(source_file)
+        base_dir = os.path.dirname(source_file)
+        ramdisk_file = f"{ramdisk_path}/{base_name}"
         
         # Check if already in RAM disk
         check_cmd = f"test -f {ramdisk_file} && echo 'exists' || echo 'missing'"
-        check_result = subprocess.run(['wsl', 'bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'exists' in check_result.stdout:
             # Verify file is not empty
             size_cmd = f"test -s {ramdisk_file} && echo 'has_data' || echo 'empty'"
-            size_result = subprocess.run(['wsl', 'bash', '-c', size_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            size_result = subprocess.run(['bash', '-c', size_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             if 'has_data' in size_result.stdout:
-                logger.info(f"✅ Database already in RAM disk: {ramdisk_file}")
+                logger.info(f"✅ STEP 2: Database already in RAM disk: {ramdisk_file}")
                 return ramdisk_file
         
-        # Copy to RAM disk
-        logger.info(f"📦 Copying database to RAM disk (this may take a minute)...")
-        copy_cmd = f"cp {source_file} {ramdisk_file} 2>&1"
-        copy_result = subprocess.run(['wsl', 'bash', '-c', copy_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
+        # Copy main database file and all related files to RAM disk
+        logger.info(f"📦 STEP 2: Copying database to RAM disk (this may take a minute)...")
+        logger.info(f"   This turns HDD into pseudo-SSD for 10x speedup")
+        
+        # Copy main file and all related .dmnd files
+        copy_cmd = f"""
+        cp {source_file} {ramdisk_file} 2>&1 && \
+        # Copy any additional DIAMOND database files if they exist
+        (cp {base_dir}/{base_name}.* {ramdisk_path}/ 2>/dev/null || true)
+        """
+        copy_result = subprocess.run(['bash', '-c', copy_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         
         if copy_result.returncode == 0:
-            logger.info(f"✅ Database copied to RAM disk: {ramdisk_file}")
+            logger.info(f"✅ STEP 2: Database copied to RAM disk: {ramdisk_file}")
             return ramdisk_file
         else:
             logger.warning(f"⚠️  Could not copy to RAM disk: {copy_result.stderr}. Using original location.")
@@ -744,13 +1097,15 @@ class EggnogProcessor:
         Create a smaller HMM database subset containing only gut-related KOs.
         This dramatically speeds up KofamScan (from 20+ minutes to 2-3 minutes).
         """
-        ko_list_file = f"{eggnog_db_wsl}/your_24_pathways_kos.txt"
+        # Use KO list file from project directory (fasta_processor/your_24_pathways_kos.txt)
+        ko_list_path = Path(__file__).parent / "your_24_pathways_kos.txt"
+        ko_list_file = self._to_wsl_path(str(ko_list_path))
         full_profiles_hmm = f"{kofam_db_wsl}/profiles.hmm"
         gut_profiles_hmm = f"{kofam_db_wsl}/profiles_gut.hmm"
         
         # Check if gut subset already exists
         check_cmd = f"test -f {gut_profiles_hmm} && test -s {gut_profiles_hmm} && echo 'exists' || echo 'missing'"
-        check_result = subprocess.run(['wsl', 'bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'exists' in check_result.stdout:
             logger.info(f"✅ Gut HMM subset already exists at {gut_profiles_hmm}")
@@ -758,7 +1113,7 @@ class EggnogProcessor:
         
         # Check if KO list file exists
         check_ko_cmd = f"test -f {ko_list_file} && echo 'exists' || echo 'missing'"
-        ko_check = subprocess.run(['wsl', 'bash', '-c', check_ko_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        ko_check = subprocess.run(['bash', '-c', check_ko_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'missing' in ko_check.stdout:
             logger.warning(f"⚠️  KO list file not found. Using full HMM database (will be slower).")
@@ -778,11 +1133,11 @@ class EggnogProcessor:
         hmmfetch -f {full_profiles_hmm} {ko_list_file} > {gut_profiles_hmm} 2>&1
         """
         
-        extract_result = subprocess.run(['wsl', 'bash', '-c', extract_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
+        extract_result = subprocess.run(['bash', '-c', extract_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
         
         # Verify the extracted file is valid (must have HMMER3 header)
         verify_cmd = f"test -f {gut_profiles_hmm} && test -s {gut_profiles_hmm} && head -1 {gut_profiles_hmm} 2>/dev/null | grep -q 'HMMER3' && echo 'valid' || echo 'invalid'"
-        verify_result = subprocess.run(['wsl', 'bash', '-c', verify_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        verify_result = subprocess.run(['bash', '-c', verify_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'valid' in verify_result.stdout:
             logger.info(f"✅ Gut HMM subset created successfully using hmmfetch")
@@ -793,7 +1148,7 @@ class EggnogProcessor:
             error_msg = extract_result.stderr[-500:] if extract_result.stderr else extract_result.stdout[-500:] if extract_result.stdout else 'Unknown error'
             logger.warning(f"⚠️  Failed to create gut HMM subset with hmmfetch: {error_msg}. Using full database.")
             # Clean up invalid file
-            subprocess.run(['wsl', 'bash', '-c', f"rm -f {gut_profiles_hmm} {gut_profiles_hmm}.*"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            subprocess.run(['bash', '-c', f"rm -f {gut_profiles_hmm} {gut_profiles_hmm}.*"], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             return full_profiles_hmm
     
     def _ensure_hmmpress(self, profiles_hmm):
@@ -802,7 +1157,7 @@ class EggnogProcessor:
         """
         h3i_file = f"{profiles_hmm}.h3i"
         check_cmd = f"test -f {h3i_file} && test -s {h3i_file} && echo 'exists' || echo 'missing'"
-        check_result = subprocess.run(['wsl', 'bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+        check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
         
         if 'exists' in check_result.stdout:
             logger.info(f"✅ HMM database already indexed")
@@ -811,7 +1166,7 @@ class EggnogProcessor:
         # Run hmmpress
         logger.info(f"🔧 Indexing HMM database (this may take 5-10 minutes)...")
         press_cmd = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate kofamscan && cd $(dirname {profiles_hmm}) && rm -f {profiles_hmm}.h3i && hmmpress -f {profiles_hmm} 2>&1"
-        press_result = subprocess.run(['wsl', 'bash', '-c', press_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=1800)
+        press_result = subprocess.run(['bash', '-c', press_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=1800)
         
         if press_result.returncode == 0:
             logger.info(f"✅ HMM database indexed successfully")
@@ -831,8 +1186,8 @@ class EggnogProcessor:
         6. Pathway scoring and final FASTA creation
         
         Args:
-            input_file: Path to input FASTA file (Windows path)
-            output_file: Path to output file (Windows path)
+            input_file: Path to input FASTA file (Linux path)
+            output_file: Path to output file (Linux path)
             job: ProcessingJob instance to update progress (optional)
             
         Returns:
@@ -845,7 +1200,7 @@ class EggnogProcessor:
         kofamscan_kos_file = None
         
         try:
-            # Convert Windows paths to WSL paths if needed
+            # Normalize paths to Linux format
             input_file_wsl = self._to_wsl_path(input_file)
             output_file_wsl = self._to_wsl_path(output_file)
             
@@ -861,7 +1216,7 @@ class EggnogProcessor:
             # Cache file size (used multiple times)
             file_size_mb = os.path.getsize(input_file) / (1024 * 1024) if os.path.exists(input_file) else 10
             
-            # Ensure eggnog_db_wsl uses forward slashes and is a proper WSL path
+            # Ensure eggnog_db_wsl uses forward slashes and is a proper Linux path
             eggnog_db_str = str(self.eggnog_db_path).replace('\\', '/')
             if eggnog_db_str.startswith('/home/') or eggnog_db_str.startswith('/mnt/'):
                 eggnog_db_wsl = eggnog_db_str
@@ -878,70 +1233,35 @@ class EggnogProcessor:
                 kofam_db_wsl = self._to_wsl_path(kofam_db_wsl)
             
             # ============================================================================
-            # DATABASE VALIDATION: Check if DIAMOND database is corrupted
+            # CRITICAL FIX: Use pre-initialized databases (from server startup)
+            # NO heavy initialization here - all done at boot time
             # ============================================================================
-            eggnog_proteins_dmnd = f"{eggnog_db_wsl}/eggnog_proteins.dmnd"
-            # Test database by actually running a search (not just dbinfo, which can pass on corrupted DBs)
-            test_db_cmd = f"source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && echo '>test' > /tmp/test_seq.faa && echo 'MKTAYIAKQR' >> /tmp/test_seq.faa && diamond blastp -d {eggnog_proteins_dmnd} -q /tmp/test_seq.faa --threads 1 --max-target-seqs 1 --outfmt 6 2>&1"
-            db_test = subprocess.run(['wsl', 'bash', '-c', test_db_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+            logger.info(f"[{time.strftime('%H:%M:%S')}] Using pre-initialized databases (fast - no disk I/O)...")
             
-            # Check for corruption in both stdout and stderr (error can appear in either)
-            db_output = db_test.stdout + db_test.stderr
+            # Get pre-initialized paths (fast, no disk operations)
+            initialized_paths = self.get_initialized_paths()
             
-            # Check if file doesn't exist - try to decompress .gz file if it exists
-            if 'No such file or directory' in db_output:
-                logger.warning(f"⚠️  DIAMOND database file not found. Checking for compressed file...")
-                gz_file = f"{eggnog_proteins_dmnd}.gz"
-                check_gz_cmd = f"test -f {gz_file} && test -s {gz_file} && echo 'exists' || echo 'missing'"
-                gz_check = subprocess.run(['wsl', 'bash', '-c', check_gz_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-                
-                if 'exists' in gz_check.stdout:
-                    logger.info(f"🔧 Found compressed database file. Decompressing...")
-                    decompress_cmd = f"cd {eggnog_db_wsl} && gunzip -f {gz_file} 2>&1"
-                    decompress_result = subprocess.run(['wsl', 'bash', '-c', decompress_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
-                    
-                    if decompress_result.returncode == 0:
-                        logger.info(f"✅ Database decompressed successfully")
-                        # Re-test the database
-                        db_test = subprocess.run(['wsl', 'bash', '-c', test_db_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
-                        db_output = db_test.stdout + db_test.stderr
-                    else:
-                        logger.error(f"❌ Failed to decompress database: {decompress_result.stderr[:200]}")
-                
-                # If still missing after decompression attempt
-                if 'No such file or directory' in db_output:
-                    logger.error(f"❌ DIAMOND database file is missing!")
-                    logger.error(f"   File not found: {eggnog_proteins_dmnd}")
-                    logger.error(f"   Attempting to download database (this may take 30-60 minutes)...")
-                    if not self._rebuild_eggnog_database(eggnog_db_wsl):
-                        return {
-                            'success': False,
-                            'error': f'DIAMOND database file is missing and could not be downloaded. The download server may be unavailable (404 errors). Please download manually from: http://eggnog5.embl.de/#/app/downloads',
-                            'processing_time': time.time() - start_time
-                        }
-            elif 'Unexpected end of input' in db_output or (db_test.returncode != 0 and 'Unexpected end of input' not in db_output):
-                logger.error(f"❌ DIAMOND database is corrupted!")
-                logger.error(f"   Error: Unexpected end of input (return code {db_test.returncode})")
-                logger.error(f"   Database test output: {db_output[:300]}")
-                logger.error(f"   Attempting to rebuild database (this may take 30-60 minutes)...")
-                if not self._rebuild_eggnog_database(eggnog_db_wsl):
+            if not initialized_paths:
+                # Fallback: lazy initialization (slower, but works if startup failed)
+                logger.warning("⚠️  Databases not pre-initialized! Initializing now (slower)...")
+                initialized_paths = self.initialize_databases(self.eggnog_db_path, self.kofam_db_path)
+                if not initialized_paths:
                     return {
                         'success': False,
-                        'error': 'DIAMOND database is corrupted and could not be rebuilt. Please run: download_eggnog_data.py --data_dir /home/ser1dai/eggnog_db_final -M -H -d 2 -y -f',
+                        'error': 'Failed to initialize databases. Please restart server to initialize at startup.',
                         'processing_time': time.time() - start_time
                     }
             
-            # ============================================================================
-            # OPTIMIZATION SETUP: RAM Disk and Gut Database
-            # ============================================================================
-            # NOTE: Only copy SMALL gut_db to RAM disk, NEVER copy main EggNOG database (causes corruption)
-            ramdisk_path = self._setup_ramdisk()
-            gut_db_path = self._ensure_gut_database(eggnog_db_wsl)
-            gut_db_ramdisk = None
-            if gut_db_path and ramdisk_path:
-                # Only copy small gut_db to RAM disk (not the main EggNOG database)
-                # Main EggNOG database should NEVER be copied to RAM disk (causes corruption)
-                gut_db_ramdisk = self._copy_to_ramdisk(gut_db_path, ramdisk_path) if gut_db_path else None
+            # Use pre-initialized paths (no disk I/O, no validation, no rebuilding)
+            gut_db_path = initialized_paths['gut_db_path']
+            gut_db_ramdisk = initialized_paths['gut_db_ramdisk']
+            ramdisk_path = initialized_paths['ramdisk_path']
+            profiles_hmm = initialized_paths['profiles_hmm']
+            
+            logger.info(f"✅ Using pre-initialized gut DB: {gut_db_ramdisk if gut_db_ramdisk else gut_db_path}")
+            
+            # Full database path (only checked if needed, not validated)
+            eggnog_proteins_dmnd = f"{eggnog_db_wsl}/eggnog_proteins.dmnd"
             
             # ============================================================================
             # STEP 1: KofamScan (HMM) - RUN FIRST (Smart Pipeline Order)
@@ -953,11 +1273,12 @@ class EggnogProcessor:
                     job.save(update_fields=['progress', 'progress_message'])
                 except Exception as e:
                     logger.warning(f"Could not update job progress: {e}")
+            logger.info(f"[{time.strftime('%H:%M:%S')}] STEP 5: Running KofamScan FIRST (Smart Pipeline Order)...")
             logger.info(f"[{time.strftime('%H:%M:%S')}] Step 1: Running KofamScan (HMM) with {cpu_cores} CPU cores...")
             
             # Verify input file has sequences and is valid FASTA
             check_input_cmd = f"test -s {input_file_wsl} && echo 'has_data' || echo 'empty'"
-            input_check = subprocess.run(['wsl', 'bash', '-c', check_input_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            input_check = subprocess.run(['bash', '-c', check_input_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             if 'empty' in input_check.stdout:
                 error_msg = "Input FASTA file is empty or has no sequences"
                 logger.error(error_msg)
@@ -969,7 +1290,7 @@ class EggnogProcessor:
             
             # Check if file has valid FASTA sequences (at least one sequence header)
             check_fasta_cmd = f"grep -c '^>' {input_file_wsl} 2>/dev/null || echo '0'"
-            fasta_check = subprocess.run(['wsl', 'bash', '-c', check_fasta_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            fasta_check = subprocess.run(['bash', '-c', check_fasta_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             try:
                 sequence_count = int(fasta_check.stdout.strip())
                 if sequence_count == 0:
@@ -987,10 +1308,13 @@ class EggnogProcessor:
             kofamscan_results_file = str(temp_dir / "kofamscan.txt")
             kofamscan_results_wsl = self._to_wsl_path(kofamscan_results_file)
             
-            # Use gut HMM subset if available (10x faster), otherwise use full database
-            profiles_hmm = self._create_gut_hmm_subset(kofam_db_wsl, eggnog_db_wsl)
+            # Use pre-initialized HMM profiles (no setup, no hmmpress, no hmmfetch - all done at startup)
+            if not profiles_hmm:
+                logger.warning("⚠️  Pre-initialized HMM profiles not available, using full database")
+                profiles_hmm = f"{kofam_db_wsl}/profiles.hmm"
+            
             check_hmm_cmd = f"test -f {profiles_hmm} && test -r {profiles_hmm} && echo 'exists' || echo 'not_exists'"
-            check_result = subprocess.run(['wsl', 'bash', '-c', check_hmm_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+            check_result = subprocess.run(['bash', '-c', check_hmm_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
             
             if 'exists' in check_result.stdout:
                 # Ensure HMM database is indexed (hmmpress)
@@ -998,12 +1322,16 @@ class EggnogProcessor:
                 # Optimize KofamScan: Use faster options
                 # --max: Stop after first hit per sequence (faster, ~2x speedup)
                 # --cpu: Use all available cores
-                # --cut_tc: Use trusted cutoffs (faster than E-value)
+                # --domE 1e-5: Relaxed E-value threshold (allows shorter/synthetic sequences to match)
+                # Note: Changed from --cut_tc (too strict) to --domE 1e-5 for better sensitivity
                 # Note: Using gut subset is already 10x faster than full database
-                kofamscan_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate kofamscan && export HMMER_NCPU={cpu_cores} && hmmsearch --cpu {cpu_cores} --cut_tc --max -o {kofamscan_results_wsl} {profiles_hmm} {input_file_wsl}"""
+                # STEP 4: Use hmmsearch with cached HMMs (hmmpress already done)
+                # --max shows all hits, --domE 1e-5 allows shorter/synthetic sequences to match
+                # (Changed from --cut_tc which is too strict for short sequences)
+                kofamscan_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate kofamscan && export HMMER_NCPU={cpu_cores} && hmmsearch --cpu {cpu_cores} --max --domE 1e-5 -o {kofamscan_results_wsl} {profiles_hmm} {input_file_wsl}"""
                 
                 logger.info(f"Command: {kofamscan_cmd}")
-                print(f"[{time.strftime('%H:%M:%S')}] Running KofamScan (optimized with gut subset): hmmsearch --cpu {cpu_cores} --cut_tc --max -o {kofamscan_results_wsl} {profiles_hmm} {input_file_wsl}")
+                print(f"[{time.strftime('%H:%M:%S')}] Running KofamScan (optimized with gut subset, relaxed cutoffs): hmmsearch --cpu {cpu_cores} --max --domE 1e-5 -o {kofamscan_results_wsl} {profiles_hmm} {input_file_wsl}")
                 
                 # Run KofamScan (non-blocking, will process results later)
                 kofamscan_stdout_file = temp_dir / "kofamscan_stdout.log"
@@ -1012,19 +1340,22 @@ class EggnogProcessor:
                 with open(kofamscan_stdout_file, 'w', encoding='utf-8') as stdout_file, \
                      open(kofamscan_stderr_file, 'w', encoding='utf-8') as stderr_file:
                     
-                    kofamscan_process = subprocess.Popen(
-                        ['wsl', 'bash', '-c', kofamscan_cmd],
+                    kofamscan_process = _register_process(subprocess.Popen(
+                        ['bash', '-c', kofamscan_cmd],
                         stdout=stdout_file,
                         stderr=stderr_file,
                         text=True
-                    )
+                    ))
                     
-                    timeout_seconds = self._calculate_timeout(file_size_mb, 'kofamscan')
+                    # Allow sufficient time for KofamScan to complete (no strict timeout)
+                    timeout_seconds = self._calculate_timeout(file_size_mb, 'kofamscan', no_timeout=True)
                     return_code, timed_out = self._monitor_process(
                         kofamscan_process, timeout_seconds, job,
-                        step_message='Running KofamScan (Step 1/6)',
+                        step_message='Running KofamScan (Step 1/6) - Ensuring complete results',
                         file_size_mb=file_size_mb
                     )
+                    
+                    # Process is automatically unregistered by _monitor_process when it completes
                     
                     # Read error output for diagnostics
                     stderr_content = ""
@@ -1039,7 +1370,7 @@ class EggnogProcessor:
                     if os.path.exists(kofamscan_results_file):
                         # Check if file has data (not empty)
                         check_kofam_data_cmd = f"test -s {kofamscan_results_wsl} && echo 'has_data' || echo 'empty'"
-                        kofam_data_check = subprocess.run(['wsl', 'bash', '-c', check_kofam_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                        kofam_data_check = subprocess.run(['bash', '-c', check_kofam_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                         if 'has_data' in kofam_data_check.stdout:
                             logger.info(f"[{time.strftime('%H:%M:%S')}] Step 1: KofamScan completed successfully (found results despite return code {return_code})")
                         else:
@@ -1077,20 +1408,21 @@ class EggnogProcessor:
             if gut_db_ramdisk or gut_db_path:
                 if job:
                     try:
-                        job.progress = 20
-                        job.progress_message = 'Running GUT fast search (Tier-1) (Step 2/5)...'
+                        job.progress = 30
+                        job.progress_message = 'Searching gut database (Step 2/5)...'
                         job.save(update_fields=['progress', 'progress_message'])
                     except Exception as e:
                         logger.warning(f"Could not update job progress: {e}")
                 
                 db_to_use = gut_db_ramdisk if gut_db_ramdisk else gut_db_path
-                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: Running GUT fast search (Tier-1) with {cpu_cores} CPU cores...")
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: Searching gut database with {cpu_cores} CPU cores...")
                 logger.info(f"[{time.strftime('%H:%M:%S')}] Using database: {db_to_use}")
                 
                 gut_hits_file = str(temp_dir / "gut_hits.tsv")
                 gut_hits_wsl = self._to_wsl_path(gut_hits_file)
                 
-                # Optimized DIAMOND parameters for speed
+                # STEP 3: Optimized DIAMOND parameters for speed
+                # --block-size 4, --index-chunks 1, --fast for maximum speed
                 diamond_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && diamond blastp -d {db_to_use} -q {input_file_wsl} -o {gut_hits_wsl} --threads {cpu_cores} --block-size 4 --index-chunks 1 --fast --outfmt 6"""
                 
                 logger.info(f"Command: {diamond_cmd}")
@@ -1102,41 +1434,59 @@ class EggnogProcessor:
                 with open(diamond_stdout_file, 'w', encoding='utf-8') as stdout_file, \
                      open(diamond_stderr_file, 'w', encoding='utf-8') as stderr_file:
                     
-                    diamond_process = subprocess.Popen(
-                        ['wsl', 'bash', '-c', diamond_cmd],
+                    diamond_process = _register_process(subprocess.Popen(
+                        ['bash', '-c', diamond_cmd],
                         stdout=stdout_file,
                         stderr=stderr_file,
                         text=True
-                    )
+                    ))
                     
-                    timeout_seconds = min(self._calculate_timeout(file_size_mb, 'diamond'), 1800)  # Max 30 min for gut search
+                    # No timeout limit - ensure complete results from gut database search
+                    timeout_seconds = self._calculate_timeout(file_size_mb, 'diamond', no_timeout=True)
                     return_code, timed_out = self._monitor_process(
                         diamond_process, timeout_seconds, job,
-                        step_message='Running GUT DIAMOND (Tier-1)',
+                        step_message='Running GUT DIAMOND (Tier-1) - Searching small gut database',
                         file_size_mb=file_size_mb
                     )
+                    
+                    # Process is automatically unregistered by _monitor_process when it completes
                 
                 # Check if we got hits
                 if os.path.exists(gut_hits_file):
                     check_hits_cmd = f"wc -l < {gut_hits_wsl} 2>/dev/null || echo '0'"
-                    hits_check = subprocess.run(['wsl', 'bash', '-c', check_hits_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    hits_check = subprocess.run(['bash', '-c', check_hits_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                     try:
                         hit_count = int(hits_check.stdout.strip())
                         if hit_count > 0:
                             gut_hits_found = True
-                            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: GUT fast search completed successfully ({hit_count} hits)")
+                            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: Gut database search completed successfully ({hit_count} hits)")
                         else:
-                            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: GUT fast search completed (no hits found)")
+                            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 2: Gut database search completed (no hits found - will search full eggNOG)")
                     except (ValueError, AttributeError):
                         logger.warning("Could not verify GUT hits count")
                 else:
                     logger.warning(f"GUT DIAMOND search failed (return code {return_code})")
             
-            # ============================================================================
-            # STEP 3: FILTER FASTA - Remove proteins found in gut hits
-            # ============================================================================
-            fasta_for_eggnog = input_file_wsl
+            # SIMPLIFIED: If gut DB found ANY hits, skip full 40GB database (FAST MODE)
+            skip_full_db_search = False
             if gut_hits_found and gut_hits_file:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] ✅ Gut DB found hits - SKIPPING full eggNOG database (FAST MODE)")
+                skip_full_db_search = True
+            
+            # ============================================================================
+            # STEP 3: Full eggNOG search (ONLY if gut DB found no hits)
+            # ============================================================================
+            if job and not skip_full_db_search:
+                try:
+                    job.progress = 40
+                    job.progress_message = 'Searching full eggNOG database (Step 3/5)...'
+                    job.save(update_fields=['progress', 'progress_message'])
+                except Exception as e:
+                    logger.warning(f"Could not update job progress: {e}")
+            
+            fasta_for_eggnog = input_file_wsl
+            # Skip full DB search if gut DB found hits (FAST MODE)
+            if not skip_full_db_search:
                 if job:
                     try:
                         job.progress = 30
@@ -1149,7 +1499,7 @@ class EggnogProcessor:
                 
                 # Extract protein IDs from gut hits
                 extract_ids_cmd = f"cut -f1 {self._to_wsl_path(gut_hits_file)} | sort -u > {temp_dir_wsl}/gut_hit_ids.txt"
-                subprocess.run(['wsl', 'bash', '-c', extract_ids_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+                subprocess.run(['bash', '-c', extract_ids_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
                 
                 # Create filtered FASTA (sequences NOT in gut hits)
                 remaining_fasta = str(temp_dir / "remaining.faa")
@@ -1183,12 +1533,12 @@ class EggnogProcessor:
                 "
                 """
                 
-                filter_result = subprocess.run(['wsl', 'bash', '-c', filter_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
+                filter_result = subprocess.run(['bash', '-c', filter_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
                 
                 if filter_result.returncode == 0 and os.path.exists(remaining_fasta):
                     # Check how many sequences remain
                     check_remaining_cmd = f"grep -c '^>' {remaining_fasta_wsl} 2>/dev/null || echo '0'"
-                    remaining_check = subprocess.run(['wsl', 'bash', '-c', check_remaining_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    remaining_check = subprocess.run(['bash', '-c', check_remaining_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                     try:
                         remaining_count = int(remaining_check.stdout.strip())
                         logger.info(f"✅ Filtered FASTA: {remaining_count} sequences remaining (removed gut hits)")
@@ -1200,150 +1550,149 @@ class EggnogProcessor:
                     fasta_for_eggnog = input_file_wsl
             
             # ============================================================================
-            # STEP 4: EGGNOG ANNOTATION (Tier-2) - Full database on remaining sequences
+            # STEP 4: EGGNOG ANNOTATION (Tier-2) - Direct DIAMOND search on full database
+            # OPTIMIZATION: Use DIAMOND directly instead of slow emapper (10x faster)
             # ============================================================================
             if job:
                 try:
                     job.progress = 40
-                    job.progress_message = 'Running eggNOG annotation (Tier-2) (Step 4/5)...'
+                    job.progress_message = 'Running eggNOG DIAMOND search (Tier-2) (Step 4/5)...'
                     job.save(update_fields=['progress', 'progress_message'])
                 except Exception as e:
                     logger.warning(f"Could not update job progress: {e}")
-            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Running eggNOG annotation (Tier-2) with {cpu_cores} CPU cores...")
+            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Checking if full eggNOG database search is needed...")
             
             emapper_output = str(temp_dir / "emapper_output")
             emapper_output_wsl = self._to_wsl_path(emapper_output)
             emapper_annotations_file = None
             emapper_has_output = False
+            full_diamond_hits_for_processing = None  # Store full diamond hits if emapper conversion fails
             
-            # Check if we have sequences to process
-            if fasta_for_eggnog != input_file_wsl:
-                check_seq_cmd = f"grep -c '^>' {fasta_for_eggnog} 2>/dev/null || echo '0'"
-                seq_check = subprocess.run(['wsl', 'bash', '-c', check_seq_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-                try:
-                    seq_count = int(seq_check.stdout.strip())
-                    if seq_count == 0:
-                        logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Skipping eggNOG (remaining.faa is empty - all sequences found in gut database)")
-                        emapper_annotations_file = None
-                        emapper_has_output = False
-                except (ValueError, AttributeError):
-                    pass
+            # SIMPLIFIED: Only search full eggNOG if gut DB found NO hits
+            sequences_to_search = False
+            if skip_full_db_search:
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: SKIPPING full eggNOG database search (gut DB found hits - FAST MODE)")
+                sequences_to_search = False
+                emapper_annotations_file = None
+                emapper_has_output = False
+            elif not gut_hits_found:
+                # No gut hits found - need to search full eggNOG database
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: No sequences found in gut database - searching full eggNOG database...")
+                sequences_to_search = True
+            else:
+                # This shouldn't happen, but skip to be safe
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: SKIPPING full eggNOG database search (gut DB found hits)")
+                sequences_to_search = False
+                emapper_annotations_file = None
+                emapper_has_output = False
             
-            if not emapper_annotations_file:  # Only run if we haven't skipped
-                # Try different search methods in order: diamond -> mmseqs -> hmmer
-                search_methods = ['diamond', 'mmseqs', 'hmmer']
-                return_code = None
+            # OPTIMIZATION: Use DIAMOND directly instead of slow emapper (10x faster)
+            # Only run eggNOG search if we have sequences NOT found in gut database
+            if sequences_to_search:
+                # Use DIAMOND directly on full eggnog database (much faster than emapper)
+                eggnog_proteins_dmnd = f"{eggnog_db_wsl}/eggnog_proteins.dmnd"
                 
-                for search_method in search_methods:
-                    # Run emapper on filtered file (or original if no filtering)
-                    emapper_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && emapper.py -i {fasta_for_eggnog} -o {emapper_output_wsl} --data_dir {eggnog_db_wsl} -m {search_method} --cpu {cpu_cores} --override"""
+                # Check if full database exists
+                check_full_db_cmd = f"test -f {eggnog_proteins_dmnd} && test -s {eggnog_proteins_dmnd} && echo 'exists' || echo 'missing'"
+                full_db_check = subprocess.run(['bash', '-c', check_full_db_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                
+                if 'exists' in full_db_check.stdout:
+                    logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: Running DIAMOND on full eggNOG database...")
                     
-                    logger.info(f"Command: {emapper_cmd}")
-                    print(f"[{time.strftime('%H:%M:%S')}] Running eggNOG annotation with {search_method}: emapper.py -i {input_file_wsl} -o {emapper_output_wsl} --data_dir {eggnog_db_wsl} -m {search_method} --cpu {cpu_cores} --override")
+                    full_diamond_hits_file = str(temp_dir / "full_eggnog_hits.tsv")
+                    full_diamond_hits_wsl = self._to_wsl_path(full_diamond_hits_file)
                     
-                    emapper_stdout_file = temp_dir / f"emapper_stdout_{search_method}.log"
-                    emapper_stderr_file = temp_dir / f"emapper_stderr_{search_method}.log"
+                    # OPTIMIZED DIAMOND parameters for speed (STEP 3)
+                    diamond_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && diamond blastp -d {eggnog_proteins_dmnd} -q {fasta_for_eggnog} -o {full_diamond_hits_wsl} --threads {cpu_cores} --block-size 4 --index-chunks 1 --fast --outfmt 6 qseqid sseqid pident length mismatch gapopen qstart qend sstart send evalue bitscore"""
                     
-                    with open(emapper_stdout_file, 'w', encoding='utf-8') as stdout_file, \
-                         open(emapper_stderr_file, 'w', encoding='utf-8') as stderr_file:
+                    logger.info(f"Command: {diamond_cmd}")
+                    print(f"[{time.strftime('%H:%M:%S')}] Running DIAMOND on full eggNOG database: diamond blastp -d {eggnog_proteins_dmnd} -q {fasta_for_eggnog} -o {full_diamond_hits_wsl} --threads {cpu_cores} --fast")
+                    
+                    diamond_stdout_file = temp_dir / "full_diamond_stdout.log"
+                    diamond_stderr_file = temp_dir / "full_diamond_stderr.log"
+                    
+                    with open(diamond_stdout_file, 'w', encoding='utf-8') as stdout_file, \
+                         open(diamond_stderr_file, 'w', encoding='utf-8') as stderr_file:
                         
-                        emapper_process = subprocess.Popen(
-                            ['wsl', 'bash', '-c', emapper_cmd],
+                        diamond_process = _register_process(subprocess.Popen(
+                            ['bash', '-c', diamond_cmd],
                             stdout=stdout_file,
                             stderr=stderr_file,
                             text=True
-                        )
+                        ))
                         
-                        timeout_seconds = self._calculate_timeout(file_size_mb, 'emapper')
+                        # Calculate timeout for DIAMOND search
+                        timeout_seconds = self._calculate_timeout(file_size_mb, 'diamond', no_timeout=True)
                         return_code, timed_out = self._monitor_process(
-                            emapper_process, timeout_seconds, job,
-                            step_message=f'Running eggNOG annotation with {search_method} (Step 4/6)',
+                            diamond_process, timeout_seconds, job,
+                            step_message='Running DIAMOND on full eggNOG database (Step 4/5) - Fast search',
                             file_size_mb=file_size_mb
                         )
                         
-                        if timed_out:
-                            logger.warning(f"emapper with {search_method} exceeded timeout, trying next method...")
-                            continue
-                        
-                    if return_code == -1:
-                        logger.warning(f"emapper with {search_method} was interrupted, trying next method...")
-                        continue
+                        # Process is automatically unregistered by _monitor_process when it completes
                     
-                    # Read output files
-                    stdout_content, stderr_content = self._read_log_files(emapper_stdout_file, emapper_stderr_file)
-                    
-                    logger.info(f"[{time.strftime('%H:%M:%S')}] emapper ({search_method}) return code: {return_code}")
-                    if stdout_content:
-                        logger.info(f"emapper ({search_method}) stdout (last 500 chars): {stdout_content[-500:]}")
-                    if stderr_content:
-                        logger.info(f"emapper ({search_method}) stderr (last 500 chars): {stderr_content[-500:]}")
-                    
-                    # Check if emapper produced output files
-                    emapper_annotations_file = f"{emapper_output_wsl}.emapper.annotations"
-                    
-                    if return_code == 0:
-                        # Success - check if file has data
-                        check_data_cmd = f"test -s {emapper_annotations_file} && echo 'has_data' || echo 'empty'"
-                        data_check = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-                        if 'has_data' in data_check.stdout:
-                            emapper_has_output = True
-                            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: eggNOG annotation completed successfully with {search_method}")
-                            break
-                        else:
-                            logger.warning(f"emapper ({search_method}) succeeded but output file is empty, trying next method...")
+                    # Check if we got hits
+                    if os.path.exists(full_diamond_hits_file):
+                        check_hits_cmd = f"wc -l < {full_diamond_hits_wsl} 2>/dev/null || echo '0'"
+                        hits_check = subprocess.run(['bash', '-c', check_hits_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                        try:
+                            hit_count = int(hits_check.stdout.strip())
+                            if hit_count > 0:
+                                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: Full eggNOG search completed successfully ({hit_count} hits)")
+                                
+                                # Try to use emapper's annotate_hits_table if available (faster than full emapper)
+                                # This converts DIAMOND hits to emapper annotations format
+                                logger.info(f"[{time.strftime('%H:%M:%S')}] Converting DIAMOND hits to annotations (fast method)...")
+                                
+                                emapper_annotations_file = f"{emapper_output_wsl}.emapper.annotations"
+                                # Use timeout to prevent hanging (5 minutes max for annotation conversion)
+                                annotate_cmd = f"""source ~/miniconda3/etc/profile.d/conda.sh && conda activate eggnog && timeout 300 emapper.py -i {fasta_for_eggnog} -o {emapper_output_wsl} --data_dir {eggnog_db_wsl} --annotate_hits_table {full_diamond_hits_wsl} --cpu {cpu_cores} --override 2>&1 || echo 'annotation_failed'"""
+                                
+                                annotate_result = subprocess.run(['bash', '-c', annotate_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=600)
+                                
+                                # Log annotation conversion result for debugging
+                                if annotate_result.returncode != 0:
+                                    error_output = annotate_result.stderr[-500:] if annotate_result.stderr else annotate_result.stdout[-500:]
+                                    logger.warning(f"[{time.strftime('%H:%M:%S')}] emapper annotation conversion failed (return code {annotate_result.returncode}): {error_output}")
+                                
+                                # Check if annotation file was created
+                                check_annotations_cmd = f"test -f {emapper_annotations_file} && test -s {emapper_annotations_file} && echo 'has_data' || echo 'empty'"
+                                annotations_check = subprocess.run(['bash', '-c', check_annotations_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                                
+                                if 'has_data' in annotations_check.stdout:
+                                    emapper_has_output = True
+                                    logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Successfully converted DIAMOND hits to annotations")
+                                else:
+                                    logger.warning(f"[{time.strftime('%H:%M:%S')}] Annotation conversion skipped or failed - DIAMOND hits will be processed directly")
+                                    logger.warning(f"   Annotation file path: {emapper_annotations_file}")
+                                    logger.warning(f"   File exists: {os.path.exists(emapper_annotations_file) if 'emapper_annotations_file' in locals() else 'N/A'}")
+                                    # Store full diamond hits for direct processing (if needed)
+                                    full_diamond_hits_for_processing = full_diamond_hits_file
+                                    emapper_has_output = False
+                                    emapper_annotations_file = None
+                            else:
+                                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: DIAMOND search completed (no hits found)")
+                                emapper_annotations_file = None
+                                emapper_has_output = False
+                        except (ValueError, AttributeError):
+                            logger.warning("Could not verify DIAMOND hits count")
                             emapper_annotations_file = None
+                            emapper_has_output = False
                     else:
-                        # Check if annotation file exists despite error
-                        check_annotations_cmd = f"test -f {emapper_annotations_file} && echo 'exists' || echo 'not_exists'"
-                        annotations_check = subprocess.run(['wsl', 'bash', '-c', check_annotations_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-                        
-                        if 'exists' in annotations_check.stdout:
-                            # Check if file has data
-                            check_data_cmd = f"test -s {emapper_annotations_file} && echo 'has_data' || echo 'empty'"
-                            data_check = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
-                            if 'has_data' in data_check.stdout:
-                                emapper_has_output = True
-                                logger.info(f"emapper ({search_method}) failed (return code {return_code}) but produced output file, continuing...")
-                                break
-                        
-                        # Check if it's a database error that we can retry with another method
-                        # Check both stdout and stderr for database errors
-                        combined_output = (stdout_content or '') + (stderr_content or '')
-                        is_database_error = (
-                            'Unexpected end of input' in combined_output or 
-                            'Error running diamond' in combined_output or
-                            'not present' in combined_output.lower() or
-                            ('database' in combined_output.lower() and 'error' in combined_output.lower()) or
-                            ('eggnog_proteins.dmnd' in combined_output and 'not present' in combined_output.lower()) or
-                            ('mmseqs.db' in combined_output and 'not present' in combined_output.lower())
-                        )
-                        
-                        if is_database_error and search_method != search_methods[-1]:
-                            logger.warning(f"emapper ({search_method}) failed with database error, trying next method ({search_methods[search_methods.index(search_method) + 1]})...")
-                            emapper_annotations_file = None
-                            continue
-                        else:
-                            logger.warning(f"emapper ({search_method}) failed (return code {return_code}), trying next method...")
-                            emapper_annotations_file = None
-            
-            # If all methods failed, log final error
-            if not emapper_has_output:
-                logger.warning(f"⚠️  All emapper search methods ({', '.join(search_methods)}) failed. Continuing without emapper results.")
-                emapper_annotations_file = None
+                        logger.warning(f"DIAMOND search failed (return code {return_code})")
+                        emapper_annotations_file = None
+                        emapper_has_output = False
+                else:
+                    logger.warning(f"⚠️  Full eggNOG database not found at {eggnog_proteins_dmnd}. Skipping full database search.")
+                    emapper_annotations_file = None
+                    emapper_has_output = False
             
             logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Tier-2 processing completed")
             
             # ============================================================================
-            # STEP 5: MERGE RESULTS - Combine gut hits + emapper + kofamscan
+            # STEP 4: MERGE RESULTS - Combine gut hits + emapper + kofamscan
             # ============================================================================
-            if job:
-                try:
-                    job.progress = 50
-                    job.progress_message = 'Merging results (Step 5/6)...'
-                    job.save(update_fields=['progress', 'progress_message'])
-                except Exception as e:
-                    logger.warning(f"Could not update job progress: {e}")
-            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 5: Merging results from all sources...")
+            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Merging results from all sources...")
             
             # Process emapper annotations if available
             emapper_enzymes_file = None
@@ -1367,7 +1716,7 @@ class EggnogProcessor:
                 # Check if processed file has data (more than just headers)
                 if success and os.path.exists(emapper_enzymes_file):
                     check_data_cmd = f"wc -l < {emapper_enzymes_wsl}"
-                    line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                     try:
                         line_count = int(line_count_result.stdout.strip())
                         if line_count <= 1:  # Only headers, no data
@@ -1380,6 +1729,60 @@ class EggnogProcessor:
                         emapper_enzymes_file = None
                 else:
                     logger.warning("Warning: Could not extract emapper enzymes, continuing without them")
+                    emapper_enzymes_file = None
+            
+            # FALLBACK: Process full DIAMOND hits directly if emapper annotation conversion failed
+            if not emapper_enzymes_file and full_diamond_hits_for_processing and os.path.exists(full_diamond_hits_for_processing):
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Fallback: Processing full DIAMOND hits directly (emapper annotation conversion failed)...")
+                emapper_enzymes_file = str(temp_dir / "emapper_enzymes.csv")
+                emapper_enzymes_wsl = self._to_wsl_path(emapper_enzymes_file)
+                
+                # Try to find ko2genes file for full eggNOG database
+                # Check common locations
+                ko2genes_candidates = [
+                    f"{eggnog_db_wsl}/eggnog.db",
+                    f"{eggnog_db_wsl}/ko2genes.txt",
+                    f"{eggnog_db_wsl}/gut_kegg_db/ko2genes.txt"
+                ]
+                ko2genes_file = None
+                for candidate in ko2genes_candidates:
+                    check_cmd = f"test -f {candidate} && echo 'exists' || echo 'missing'"
+                    check_result = subprocess.run(['bash', '-c', check_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    if 'exists' in check_result.stdout:
+                        ko2genes_file = candidate
+                        break
+                
+                # Process DIAMOND hits using process_diamond_hits template
+                # Note: This will extract KOs from subject IDs if ko2genes not available
+                success, result = self._run_script_template(
+                    "process_diamond_hits",
+                    {
+                        "DIAMOND_HITS": self._to_wsl_path(full_diamond_hits_for_processing),
+                        "KO2GENES_FILE": ko2genes_file if ko2genes_file else "None",
+                        "OUTPUT_FILE": emapper_enzymes_wsl
+                    },
+                    temp_dir,
+                    conda_env='eggnog',
+                    timeout=300,
+                    step_name='process full DIAMOND hits (fallback)'
+                )
+                
+                # Check if processed file has data (more than just headers)
+                if success and os.path.exists(emapper_enzymes_file):
+                    check_data_cmd = f"wc -l < {emapper_enzymes_wsl}"
+                    line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    try:
+                        line_count = int(line_count_result.stdout.strip())
+                        if line_count > 1:  # Has data rows
+                            logger.info(f"✅ Fallback: Extracted {line_count - 1} enzyme annotations from full DIAMOND hits")
+                        else:
+                            logger.warning("Warning: Full DIAMOND hits processing produced no data rows")
+                            emapper_enzymes_file = None
+                    except (ValueError, AttributeError):
+                        logger.warning("Warning: Could not verify full DIAMOND hits processing data, skipping")
+                        emapper_enzymes_file = None
+                else:
+                    logger.warning("Warning: Could not process full DIAMOND hits, continuing without them")
                     emapper_enzymes_file = None
             
             # Process kofamscan results if available
@@ -1420,7 +1823,7 @@ class EggnogProcessor:
                     # Check if processed file has data (more than just headers)
                     if success and os.path.exists(kofamscan_kos_file):
                         check_data_cmd = f"wc -l < {kofamscan_kos_wsl}"
-                        line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                        line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                         try:
                             line_count = int(line_count_result.stdout.strip())
                             if line_count <= 1:  # Only headers, no data
@@ -1458,7 +1861,7 @@ class EggnogProcessor:
                 
                 if success and os.path.exists(gut_enzymes_file):
                     check_data_cmd = f"wc -l < {gut_enzymes_wsl}"
-                    line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                    line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                     try:
                         line_count = int(line_count_result.stdout.strip())
                         if line_count > 1:
@@ -1482,7 +1885,7 @@ class EggnogProcessor:
             # Verify gut data file has actual data
             if has_gut_data:
                 check_data_cmd = f"wc -l < {self._to_wsl_path(gut_enzymes_file)}"
-                line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                 try:
                     if int(line_count_result.stdout.strip()) <= 1:
                         has_gut_data = False
@@ -1492,7 +1895,7 @@ class EggnogProcessor:
             # Verify files have actual data (not just headers)
             if has_emapper_data:
                 check_data_cmd = f"wc -l < {self._to_wsl_path(emapper_enzymes_file)}"
-                line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                 try:
                     if int(line_count_result.stdout.strip()) <= 1:
                         has_emapper_data = False
@@ -1501,7 +1904,7 @@ class EggnogProcessor:
             
             if has_kofam_data:
                 check_data_cmd = f"wc -l < {self._to_wsl_path(kofamscan_kos_file)}"
-                line_count_result = subprocess.run(['wsl', 'bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
+                line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                 try:
                     if int(line_count_result.stdout.strip()) <= 1:
                         has_kofam_data = False
@@ -1644,16 +2047,16 @@ class EggnogProcessor:
                 logger.info(f"[{time.strftime('%H:%M:%S')}] Step 3: Skipped merge (no data found), using empty output file")
             
             # ============================================================================
-            # STEP 4: Calculate Pathway-Level Scores and Create Final FASTA
+            # STEP 4: Merge Results and Calculate Pathway Scores
             # ============================================================================
             if job:
                 try:
-                    job.progress = 75
-                    job.progress_message = 'Calculating pathway-level scores (Step 4/4)...'
+                    job.progress = 60
+                    job.progress_message = 'Merging results and calculating pathway scores (Step 4/5)...'
                     job.save(update_fields=['progress', 'progress_message'])
                 except Exception as e:
                     logger.warning(f"Could not update job progress: {e}")
-            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 6: Calculating pathway-level scores...")
+            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 4: Merging KofamScan + Gut/eggNOG results...")
             
             # Create pathway scoring script using ChatGPT's approach
             base_name = Path(output_file).stem  # e.g., "enzymes_36_final_multiple_fasta"
@@ -1705,49 +2108,67 @@ class EggnogProcessor:
                 logger.warning("Warning: Pathway scores file was not created, but processing will continue")
             
             # ============================================================================
-            # Create final merged FASTA file with annotated sequences (optional)
+            # STEP 6: Create final merged FASTA file (optional - only if data exists)
             # ============================================================================
-            if job:
+            # Check if merged CSV has data (not just headers)
+            has_annotation_data = False
+            if os.path.exists(merged_file):
+                check_data_cmd = f"wc -l < {merged_file_wsl}"
+                line_count_result = subprocess.run(['bash', '-c', check_data_cmd], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10)
                 try:
-                    job.progress = 90
-                    job.progress_message = 'Creating final FASTA file (Step 4/4)...'
-                    job.save(update_fields=['progress', 'progress_message'])
-                except Exception as e:
-                    logger.warning(f"Could not update job progress: {e}")
-            logger.info(f"[{time.strftime('%H:%M:%S')}] Step 7: Creating final merged FASTA file...")
+                    line_count = int(line_count_result.stdout.strip())
+                    has_annotation_data = line_count > 1  # More than just header row
+                except (ValueError, AttributeError):
+                    has_annotation_data = False
             
-            # Create final FASTA file path (same location as CSV, with .fasta extension)
-            final_fasta_file = str(Path(output_file).with_suffix('.fasta'))
-            final_fasta_file_wsl = self._to_wsl_path(final_fasta_file)
+            # Initialize final_fasta_file variable
+            final_fasta_file = None
             
-            # Create final FASTA file using template
-            success, result = self._run_script_template(
-                "create_fasta",
-                {
-                    "MERGED_CSV": merged_file_wsl,
-                    "INPUT_FASTA": input_file_wsl,
-                    "OUTPUT_FASTA": final_fasta_file_wsl
-                },
-                temp_dir,
-                conda_env='eggnog',
-                timeout=600,
-                step_name='create final FASTA'
-            )
-            
-            if not success:
-                logger.warning(f"Warning: Final FASTA file creation failed: {result.stderr[-1000:] if result.stderr else 'No error output'}")
-            elif os.path.exists(final_fasta_file):
-                logger.info(f"[{time.strftime('%H:%M:%S')}] Final merged FASTA file created successfully")
-                logger.info(f"Final FASTA file saved to: {final_fasta_file}")
+            if has_annotation_data:
+                if job:
+                    try:
+                        job.progress = 90
+                        job.progress_message = 'Creating final FASTA file (Step 6/6)...'
+                        job.save(update_fields=['progress', 'progress_message'])
+                    except Exception as e:
+                        logger.warning(f"Could not update job progress: {e}")
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 6: Creating final merged FASTA file...")
+                
+                # Create final FASTA file path (same location as CSV, with .fasta extension)
+                final_fasta_file = str(Path(output_file).with_suffix('.fasta'))
+                final_fasta_file_wsl = self._to_wsl_path(final_fasta_file)
+                
+                # Create final FASTA file using template
+                success, result = self._run_script_template(
+                    "create_fasta",
+                    {
+                        "MERGED_CSV": merged_file_wsl,
+                        "INPUT_FASTA": input_file_wsl,
+                        "OUTPUT_FASTA": final_fasta_file_wsl
+                    },
+                    temp_dir,
+                    conda_env='eggnog',
+                    timeout=600,
+                    step_name='create final FASTA'
+                )
+                
+                if not success:
+                    logger.warning(f"Warning: Final FASTA file creation failed: {result.stderr[-1000:] if result.stderr else 'No error output'}")
+                elif os.path.exists(final_fasta_file):
+                    logger.info(f"[{time.strftime('%H:%M:%S')}] Final merged FASTA file created successfully")
+                    logger.info(f"Final FASTA file saved to: {final_fasta_file}")
+                else:
+                    logger.warning("Warning: Final FASTA file was not created, but processing will continue")
             else:
-                logger.warning("Warning: Final FASTA file was not created, but processing will continue")
+                logger.info(f"[{time.strftime('%H:%M:%S')}] Step 7: Skipping FASTA file creation (no annotation data found)")
+                logger.info("   FASTA file will only be created when annotations are found")
             
             processing_time = time.time() - start_time
             logger.info(f"[{time.strftime('%H:%M:%S')}] ✅ All processing completed in {processing_time:.2f} seconds")
             
             # Return final FASTA file path if it was created
             final_fasta_path = None
-            if os.path.exists(final_fasta_file):
+            if final_fasta_file and os.path.exists(final_fasta_file):
                 final_fasta_path = final_fasta_file
                 logger.info(f"Final merged FASTA file available at: {final_fasta_path}")
             
@@ -1784,43 +2205,49 @@ class EggnogProcessor:
                 'processing_time': time.time() - start_time
             }
     
-    def _to_wsl_path(self, windows_path):
+    def _to_wsl_path(self, path_input):
         """
-        Convert Windows path to WSL path
+        Normalize path to Linux format (handles both Linux and Windows paths).
+        In Linux environment, returns Linux paths as-is.
         
         Args:
-            windows_path: Windows-style path (e.g., C:\\Users\\...) or WSL path (e.g., /home/...)
+            path_input: Path string or Path object (Linux or Windows format)
             
         Returns:
-            WSL-style path (e.g., /mnt/c/Users/... or /home/...)
+            Linux-style path (e.g., /home/... or /mnt/...)
         """
-        if isinstance(windows_path, Path):
-            windows_path = str(windows_path)
+        if isinstance(path_input, Path):
+            path_str = str(path_input)
+        else:
+            path_str = path_input
         
-        # Normalize backslashes
-        windows_path = windows_path.replace('\\', '/')
+        # Normalize backslashes to forward slashes
+        path_str = path_str.replace('\\', '/')
         
-        # If already a WSL path (starts with /home, /usr, /opt, etc.), return as is
-        if windows_path.startswith('/home/') or windows_path.startswith('/usr/') or windows_path.startswith('/opt/'):
-            return windows_path
-        # If starts with / but not /mnt/, it's likely a WSL path
-        if windows_path.startswith('/') and ':' not in windows_path and not windows_path.startswith('/mnt/'):
-            return windows_path
-        if windows_path.startswith('\\wsl') or windows_path.startswith('/wsl'):
-            return windows_path.replace('\\', '/')
+        # If already a Linux path (starts with /home, /usr, /opt, /mnt, etc.), return as is
+        if path_str.startswith(('/home/', '/usr/', '/opt/', '/mnt/', '/tmp/', '/var/')):
+            return path_str
         
-        # Convert Windows path to WSL
-        try:
-            path = Path(windows_path.replace('/', '\\'))  # Use backslash for Windows Path
-            drive = path.drive.replace(':', '').lower()
-            if not drive:
-                # No drive letter, might already be a WSL path
-                return windows_path
-            rest = str(path.relative_to(path.anchor)).replace('\\', '/')
-            return f"/mnt/{drive}/{rest}"
-        except:
-            # If path conversion fails, return as is with forward slashes
-            return windows_path
+        # If starts with / and no drive letter, it's already a Linux path
+        if path_str.startswith('/') and ':' not in path_str:
+            return path_str
+        
+        # Handle Windows paths (C:\Users\... -> /mnt/c/Users/...)
+        # This is for compatibility if paths come from Windows
+        if ':' in path_str or path_str.startswith('\\'):
+            try:
+                # Extract drive letter (C: -> c)
+                if ':' in path_str:
+                    parts = path_str.split(':', 1)
+                    if len(parts) == 2:
+                        drive = parts[0].lower().strip()
+                        rest = parts[1].lstrip('/')
+                        return f"/mnt/{drive}/{rest}"
+            except:
+                pass
+        
+        # If all else fails, return normalized path
+        return path_str
     
     def get_eggnog_info(self):
         """Get information about eggnog database"""

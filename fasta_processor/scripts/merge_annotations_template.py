@@ -142,4 +142,3 @@ print(f"   - LOW confidence: {len(merged[merged['confidence_score'] == 'LOW'])}"
 print(f"   - eggnog only: {len(merged[merged['annotation_source'] == 'eggnog'])}")
 print(f"   - kofamscan only: {len(merged[merged['annotation_source'] == 'kofamscan'])}")
 print(f"   - both: {len(merged[merged['annotation_source'] == 'eggnog+kofamscan'])}")
-
