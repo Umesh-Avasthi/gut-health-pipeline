@@ -54,7 +54,12 @@ class ProcessingJob(models.Model):
     processing_time = models.FloatField(null=True, blank=True, help_text="Processing time in seconds")
     progress = models.IntegerField(default=0, help_text="Processing progress percentage (0-100)")
     progress_message = models.CharField(max_length=255, blank=True, help_text="Current processing step message")
-    
+    tpm_file = models.FileField(
+    upload_to='tpm_tables/%Y/%m/%d/',
+    null=True, blank=True,
+    help_text="RNA TPM expression table (gene_id, TPM)"
+)
+
     class Meta:
         ordering = ['-started_at']
         verbose_name = 'Processing Job'

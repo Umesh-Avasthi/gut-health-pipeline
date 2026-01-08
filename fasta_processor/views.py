@@ -74,11 +74,13 @@ def upload_fasta(request):
             uploaded_files.append(fasta_file)
             
             # Create job
+            tpm_file = request.FILES.get('tpm_file')
             job, created = ProcessingJob.objects.get_or_create(
                 fasta_file=fasta_file,
                 defaults={
                     'user': request.user,
-                    'status': 'pending'
+                    'status': 'pending',
+                    'tpm_file': tpm_file
                 }
             )
             jobs_created.append(job)
@@ -155,11 +157,11 @@ def fasta_jobs(request):
     from datetime import timedelta
     
     fasta_files = FastaFile.objects.filter(user=request.user)
-    jobs = ProcessingJob.objects.filter(user=request.user)
+    all_jobs = ProcessingJob.objects.filter(user=request.user)
     
     # Automatically detect and reset stuck jobs (running for more than 3 hours)
     # Increased from 2 to 3 hours to account for large files
-    stuck_jobs = jobs.filter(
+    stuck_jobs = all_jobs.filter(
         status='running',
         started_at__lt=timezone.now() - timedelta(hours=3)
     )
@@ -187,7 +189,18 @@ def fasta_jobs(request):
             from .services import start_next_job_in_queue
             start_next_job_in_queue()
     
-    # Categorize jobs into tabs
+    # Get latest 5 jobs and their associated fasta files
+    # Get fasta_file IDs from the latest 5 jobs (before slicing to keep it as queryset)
+    latest_fasta_file_ids = list(all_jobs.order_by('-started_at').values_list('fasta_file_id', flat=True)[:5])
+    latest_fasta_file_ids = [fid for fid in latest_fasta_file_ids if fid is not None]
+    
+    # Limit fasta_files to only those associated with latest 5 jobs
+    if latest_fasta_file_ids:
+        fasta_files = fasta_files.filter(id__in=latest_fasta_file_ids)
+    else:
+        fasta_files = fasta_files.none()  # Return empty queryset if no jobs
+    
+    # Categorize jobs into tabs (only for latest 5 jobs)
     # Completed: status is 'completed'
     completed_files = fasta_files.filter(status='completed')
     
@@ -203,6 +216,9 @@ def fasta_jobs(request):
     processing_file_ids.update(fasta_files.filter(job__status__in=['pending', 'running']).values_list('id', flat=True))
     # Get the actual files
     processing_files = fasta_files.filter(id__in=processing_file_ids)
+    
+    # Limit jobs to latest 5 for display
+    jobs = all_jobs.order_by('-started_at')[:5]
     
     context = {
         'fasta_files': fasta_files,

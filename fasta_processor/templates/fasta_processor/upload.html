@@ -69,7 +69,25 @@
                 <label for="id_description">Description (Optional)</label>
                 {{ form.description }}
             </div>
+            <div class="form-group">
+                <label for="id_tpm">RNA TPM Table (Optional but Recommended)</label>
+                <div class="file-input-wrapper {% if has_running_job %}file-input-disabled{% endif %}">
+                    <label for="id_tpm" class="file-input-label">
+                        📊 Upload RNA TPM CSV (gene_id, TPM)
+                        <input type="file" id="id_tpm" name="tpm_file"
+                               accept=".csv"
+                               class="file-input-hidden"
+                               {% if has_running_job %}disabled{% endif %}>
+                    </label>
+                    <div id="tpm-file-name" class="file-name file-name-hidden"></div>
+                </div>
+                <small class="form-text text-muted">
+                    This enables real metabolic activity scoring (recommended).
+                </small>
+            </div>
             
+
+
             <button type="submit" class="btn btn-primary {% if has_running_job %}btn-disabled{% endif %}" {% if has_running_job %}disabled{% endif %}>
                 {% if has_running_job %}
                     ⏳ Processing in Progress (Upload Disabled)

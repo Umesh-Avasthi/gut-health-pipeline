@@ -12,9 +12,12 @@ class MultipleFileInput(forms.FileInput):
             self.attrs = {}
         self.attrs['multiple'] = True
 
+    # def value_from_datadict(self, data, files, name):
+          # Return None to let the view handle multiple files via request.FILES.getlist()
+         # return None
+    
     def value_from_datadict(self, data, files, name):
-        # Return None to let the view handle multiple files via request.FILES.getlist()
-        return None
+        return files.getlist(name)
 
 
 class FastaFileUploadForm(forms.Form):
@@ -39,6 +42,12 @@ class FastaFileUploadForm(forms.Form):
         help_text='Optional description (applies to all files)'
     )
     
+    tpm_file = forms.FileField(
+    required=False,
+    widget=forms.FileInput(attrs={'accept': '.csv'}),
+    help_text="Optional RNA TPM table for real metabolic scoring"
+    )
+
     def clean_files(self):
         # Get files from form data
         file = self.cleaned_data.get('files')
@@ -62,4 +71,27 @@ class FastaFileUploadForm(forms.Form):
                 )
         
         return file
+
+def clean_tpm_file(self):
+    tpm = self.cleaned_data.get("tpm_file")
+    if not tpm:
+        return None
+
+    if not tpm.name.lower().endswith(".csv"):
+        raise forms.ValidationError("TPM file must be a CSV file")
+
+    import pandas as pd
+    try:
+        df = pd.read_csv(tpm)
+    except Exception:
+        raise forms.ValidationError("TPM file is not a valid CSV")
+
+    required = {"protein_id"}
+    if not required.issubset(df.columns):
+        raise forms.ValidationError("TPM CSV must contain protein_id column")
+
+    if "TPM" not in df.columns and "TPM_norm" not in df.columns:
+        raise forms.ValidationError("TPM CSV must contain TPM or TPM_norm column")
+
+    return tpm
 

@@ -317,6 +317,29 @@ class EggnogProcessor:
             logger.info("Calling _run_eggnog()...")
             result = self._run_eggnog(fasta_path, str(output_file), job)
             logger.info(f"_run_eggnog() returned: success={result.get('success')}, error={result.get('error', 'None')}")
+            # TPM JOIN
+            if result.get("success") and job.tpm_file:
+                logger.info("🔗 TPM file detected — merging RNA expression into enzyme table")
+
+                enzymes_with_tpm = output_dir / f"enzymes_tpm_{job.id}_{base_name}.csv"
+
+                ok, _ = self._run_script_template(
+                    "join_tpm",
+                    {
+                        "ENZYMES_CSV": str(output_file),
+                        "TPM_FILE": job.tpm_file.path,
+                        "OUTPUT_FILE": str(enzymes_with_tpm)
+                    },
+                    output_dir,
+                    conda_env="eggnog",
+                    timeout=180,
+                    step_name="TPM Join"
+                )
+
+                if not ok:
+                    raise Exception("TPM join failed")
+
+                output_file = enzymes_with_tpm
             
             if result['success']:
                 # Update job with results
@@ -907,18 +930,18 @@ seq = ""
 def commit():
     global hdr, seq
     if hdr:
-        # Try multiple KO patterns: K\d{{5}} or KO:\d+ or KO\d{{5}}
-        # First try standard K\d{{5}} format
+        # Try multiple KO patterns: K\\d{{5}} or KO:\\d+ or KO\\d{{5}}
+        # First try standard K\\d{{5}} format
         m = re.search(r"(K\\d{{5}})", hdr)
         if not m:
             # Try KO: format (e.g., KO:00813)
             m = re.search(r"KO:(\\d+)", hdr)
         if not m:
-            # Try KO\d{{5}} format (e.g., KO00813)
+            # Try KO\\d{{5}} format (e.g., KO00813)
             m = re.search(r"KO(\\d{{5}})", hdr)
         if m:
             ko = m.group(1)
-            # Normalize KO format to K\d{{5}}
+            # Normalize KO format to K\\d{{5}}
             if ko.startswith("KO:"):
                 ko = "K" + ko[3:].zfill(5)
             elif ko.startswith("KO"):
